@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light only">
-  <title>WORD LAB | 단어시험지 생성기</title>
+  <title>WORD LAB | 단어 시험지 생성기</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Noto+Sans+KR:wght@400;500;700;800&display=swap" rel="stylesheet">
@@ -62,7 +62,7 @@
             </div>
 
             <div class="preset-tools">
-              <button class="btn btn-ghost" type="button" id="toggle-layout-lock-btn">반 구성 잠금</button>
+              <button class="btn btn-ghost" type="button" id="toggle-layout-lock-btn">반 구성 편집</button>
               <button class="btn btn-ghost" type="button" id="import-snapshot-btn">파일 복원</button>
             </div>
           </div>
@@ -109,7 +109,6 @@
             </div>
           </div>
         </section>
-
       </div>
     </aside>
 
@@ -135,9 +134,9 @@
   <template id="class-card-template">
     <article class="class-card">
       <div class="class-card-head">
-        <div>
+        <div class="class-card-heading">
           <div class="card-label">CLASS SLOT</div>
-          <h4>새 반</h4>
+          <h4>기본반</h4>
         </div>
         <button class="icon-btn remove-class-btn" type="button" aria-label="반 삭제">삭제</button>
       </div>
@@ -145,7 +144,7 @@
       <div class="class-form-grid">
         <label class="field-block">
           <span class="field-title">반 이름</span>
-          <input class="text-input class-name-input" type="text" placeholder="예: 2강의실A">
+          <input class="text-input class-name-input" type="text" placeholder="예: 2강서B">
         </label>
         <div class="stat-chip-group">
           <span class="stat-chip"><strong class="valid-count">0</strong> 유효 단어</span>
@@ -154,15 +153,19 @@
         </div>
       </div>
 
-      <label class="field-block">
-        <span class="field-title">단어 / 뜻 붙여넣기</span>
-        <textarea class="paste-area" spellcheck="false" placeholder="abandon[TAB]버리다&#10;ability[TAB]능력&#10;..."></textarea>
-      </label>
+      <div class="class-editor-grid">
+        <label class="field-block class-editor-pane">
+          <span class="field-title">단어 / 뜻 붙여넣기</span>
+          <textarea class="paste-area" spellcheck="false" placeholder="abandon[TAB]버리다&#10;ability[TAB]능력&#10;..."></textarea>
+        </label>
 
-      <div class="preview-area">
-        <div class="preview-title">미리보기</div>
-        <div class="preview-list"></div>
-        <div class="preview-note"></div>
+        <div class="field-block class-editor-pane">
+          <span class="field-title">미리보기</span>
+          <div class="preview-area">
+            <div class="preview-list"></div>
+            <div class="preview-note"></div>
+          </div>
+        </div>
       </div>
     </article>
   </template>
