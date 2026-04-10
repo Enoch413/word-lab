@@ -4,6 +4,15 @@ const HANDLE_STORE_NAME = "handles";
 const SAVE_ROOT_HANDLE_KEY = "save-root";
 const SNAPSHOT_FILE_NAME = "WORD_LAB_단어복원.json";
 const MAX_PREVIEW_ITEMS = 5;
+const LAB_STORAGE_NAME = "WORD LAB";
+const LAST_USED_CLASS_KEY_PREFIX = `${LAB_STORAGE_NAME}:last-class`;
+const FIREBASE_SDK_VERSION = "10.12.2";
+const FIREBASE_CONFIG_GLOBAL_KEYS = [
+  "__WORD_LAB_FIREBASE_CONFIG__",
+  "__CODELAB_FIREBASE_CONFIG__",
+  "__FIREBASE_CONFIG__",
+  "firebaseConfig",
+];
 const CLASS_PRESET_CONFIG = [
   { id: "mon-wed", label: "월/수 반" },
   { id: "tue-thu", label: "화/목 반" },
@@ -22,6 +31,8 @@ const state = {
   saveRootName: "",
   toastTimer: null,
   isGenerating: false,
+  currentUser: null,
+  userProfile: null,
 };
 
 const nativeBridge = {
@@ -31,6 +42,8 @@ const nativeBridge = {
 };
 
 const elements = {};
+let firebaseServicesPromise = null;
+let authContextPromise = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   void initializeApp();
@@ -100,11 +113,505 @@ function applyNativeSaveRootStatus(status) {
   state.saveRootName = status?.name ? String(status.name) : "";
 }
 
+// Auth/profile lookup is optional. If it fails, the app keeps the existing local fallback behavior.
+async function applyAuthenticatedAdminDefaults() {
+  const authContext = await loadCurrentUserProfile();
+  state.currentUser = authContext?.user || null;
+  state.userProfile = authContext?.profile || null;
+
+  if (!shouldApplyAdminDefaults(state.currentUser, state.userProfile)) {
+    return;
+  }
+
+  const selection = resolveAdminClassSelection(
+    state.currentUser.uid,
+    state.userProfile
+  );
+  if (!selection) {
+    return;
+  }
+
+  applyAdminClassSelection(selection);
+  rememberLastUsedClassForCurrentAdmin(selection.classReference);
+}
+
+function shouldApplyAdminDefaults(user, profile) {
+  return Boolean(
+    user?.uid &&
+    String(profile?.role || "").trim().toLocaleLowerCase() === "admin"
+  );
+}
+
+async function loadCurrentUserProfile() {
+  if (!authContextPromise) {
+    authContextPromise = (async () => {
+      try {
+        const injectedContext = getInjectedAuthContext();
+        if (injectedContext) {
+          return injectedContext;
+        }
+
+        const compatContext = await loadCompatFirebaseUserContext();
+        if (compatContext) {
+          return compatContext;
+        }
+
+        return loadModularFirebaseUserContext();
+      } catch (error) {
+        console.error(error);
+        return null;
+      }
+    })();
+  }
+
+  return authContextPromise;
+}
+
+function getInjectedAuthContext() {
+  const candidate =
+    window.__WORD_LAB_AUTH_CONTEXT__ || window.__CODELAB_AUTH_CONTEXT__;
+  const user = candidate?.currentUser || candidate?.user || null;
+
+  if (!user?.uid) {
+    return null;
+  }
+
+  return {
+    user,
+    profile: candidate?.userProfile || candidate?.profile || null,
+  };
+}
+
+async function loadCompatFirebaseUserContext() {
+  const firebase = window.firebase;
+  if (
+    !firebase ||
+    typeof firebase.auth !== "function" ||
+    typeof firebase.firestore !== "function"
+  ) {
+    return null;
+  }
+
+  const auth = firebase.auth();
+  const user = await new Promise((resolve) => {
+    const unsubscribe = auth.onAuthStateChanged(
+      (nextUser) => {
+        unsubscribe();
+        resolve(nextUser || null);
+      },
+      () => {
+        unsubscribe();
+        resolve(null);
+      }
+    );
+  });
+
+  if (!user?.uid) {
+    return null;
+  }
+
+  let profile = null;
+
+  try {
+    const snapshot = await firebase
+      .firestore()
+      .collection("users")
+      .doc(user.uid)
+      .get();
+    profile = snapshot.exists ? snapshot.data() || null : null;
+  } catch (error) {
+    console.error(error);
+  }
+
+  return { user, profile };
+}
+
+async function loadModularFirebaseUserContext() {
+  const firebaseServices = await loadFirebaseServices();
+  if (!firebaseServices) {
+    return null;
+  }
+
+  const user = await new Promise((resolve) => {
+    const unsubscribe = firebaseServices.onAuthStateChanged(
+      firebaseServices.auth,
+      (nextUser) => {
+        unsubscribe();
+        resolve(nextUser || null);
+      },
+      () => {
+        unsubscribe();
+        resolve(null);
+      }
+    );
+  });
+
+  if (!user?.uid) {
+    return null;
+  }
+
+  let profile = null;
+
+  try {
+    const snapshot = await firebaseServices.getDoc(
+      firebaseServices.doc(firebaseServices.db, "users", user.uid)
+    );
+    profile = snapshot.exists() ? snapshot.data() || null : null;
+  } catch (error) {
+    console.error(error);
+  }
+
+  return { user, profile };
+}
+
+async function loadFirebaseServices() {
+  if (!firebaseServicesPromise) {
+    firebaseServicesPromise = (async () => {
+      const injectedServices =
+        window.__WORD_LAB_FIREBASE__ || window.__CODELAB_FIREBASE__;
+      if (
+        injectedServices?.auth &&
+        injectedServices?.db &&
+        typeof injectedServices.onAuthStateChanged === "function" &&
+        typeof injectedServices.doc === "function" &&
+        typeof injectedServices.getDoc === "function"
+      ) {
+        return injectedServices;
+      }
+
+      const firebaseConfig = getFirebaseConfig();
+      if (!firebaseConfig) {
+        return null;
+      }
+
+      const [appModule, authModule, firestoreModule] = await Promise.all([
+        import(
+          `https://www.gstatic.com/firebasejs/${FIREBASE_SDK_VERSION}/firebase-app.js`
+        ),
+        import(
+          `https://www.gstatic.com/firebasejs/${FIREBASE_SDK_VERSION}/firebase-auth.js`
+        ),
+        import(
+          `https://www.gstatic.com/firebasejs/${FIREBASE_SDK_VERSION}/firebase-firestore.js`
+        ),
+      ]);
+
+      const firebaseApp = appModule.getApps().length
+        ? appModule.getApp()
+        : appModule.initializeApp(firebaseConfig);
+
+      return {
+        auth: authModule.getAuth(firebaseApp),
+        db: firestoreModule.getFirestore(firebaseApp),
+        onAuthStateChanged: authModule.onAuthStateChanged,
+        doc: firestoreModule.doc,
+        getDoc: firestoreModule.getDoc,
+      };
+    })().catch((error) => {
+      console.error(error);
+      return null;
+    });
+  }
+
+  return firebaseServicesPromise;
+}
+
+function getFirebaseConfig() {
+  for (const key of FIREBASE_CONFIG_GLOBAL_KEYS) {
+    const normalized = normalizeFirebaseConfig(window[key]);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  for (const key of FIREBASE_CONFIG_GLOBAL_KEYS) {
+    try {
+      const rawValue = localStorage.getItem(key);
+      const normalized = normalizeFirebaseConfig(rawValue);
+      if (normalized) {
+        return normalized;
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  return null;
+}
+
+function normalizeFirebaseConfig(candidate) {
+  if (!candidate) {
+    return null;
+  }
+
+  let value = candidate;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  if (
+    !value ||
+    typeof value !== "object" ||
+    typeof value.apiKey !== "string" ||
+    typeof value.projectId !== "string"
+  ) {
+    return null;
+  }
+
+  return value;
+}
+
+function resolveAdminClassSelection(uid, profile) {
+  const profileClassIds = normalizeProfileClassIds(profile?.classIds);
+  if (!profileClassIds.length) {
+    if (normalizeLookupValue(profile?.adminScope) === "all") {
+      return null;
+    }
+    return null;
+  }
+
+  const assignments = profileClassIds
+    .map((classId) => resolveClassAssignment(classId))
+    .filter(Boolean)
+    .filter(
+      (assignment, index, items) =>
+        items.findIndex(
+          (candidate) =>
+            candidate.presetId === assignment.presetId &&
+            candidate.classReference === assignment.classReference
+        ) === index
+    );
+
+  if (!assignments.length) {
+    return null;
+  }
+
+  if (assignments.length === 1) {
+    return assignments[0];
+  }
+
+  const lastUsedClass = normalizeLookupValue(getLastUsedClassForUser(uid));
+  if (lastUsedClass) {
+    const matchingAssignment = assignments.find((assignment) =>
+      assignment.matchKeys.includes(lastUsedClass)
+    );
+    if (matchingAssignment) {
+      return matchingAssignment;
+    }
+  }
+
+  return assignments[0];
+}
+
+function normalizeProfileClassIds(classIds) {
+  if (!Array.isArray(classIds)) {
+    return [];
+  }
+
+  return classIds
+    .map((item) => {
+      if (typeof item === "string") {
+        return item;
+      }
+      if (item && typeof item === "object") {
+        return item.classId || item.id || item.className || item.name || "";
+      }
+      return "";
+    })
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+function resolveClassAssignment(classId) {
+  return findClassAssignment(classId) || findPresetAssignment(classId);
+}
+
+function findClassAssignment(classId) {
+  const normalizedClassId = normalizeLookupValue(classId);
+  if (!normalizedClassId) {
+    return null;
+  }
+
+  for (const preset of CLASS_PRESET_CONFIG) {
+    const presetState = state.presets[preset.id];
+    const classes = Array.isArray(presetState?.classes) ? presetState.classes : [];
+    const matchedClass = classes.find((classData) =>
+      getClassMatchKeys(classData).includes(normalizedClassId)
+    );
+
+    if (matchedClass) {
+      return createClassAssignment(preset, matchedClass, classId);
+    }
+  }
+
+  return null;
+}
+
+function findPresetAssignment(classId) {
+  const normalizedClassId = normalizeLookupValue(classId);
+  if (!normalizedClassId) {
+    return null;
+  }
+
+  const preset = CLASS_PRESET_CONFIG.find((item) =>
+    [item.id, item.label]
+      .map((value) => normalizeLookupValue(value))
+      .includes(normalizedClassId)
+  );
+  if (!preset) {
+    return null;
+  }
+
+  const firstClass = state.presets[preset.id]?.classes?.[0] || null;
+  return createClassAssignment(preset, firstClass, classId);
+}
+
+function createClassAssignment(preset, classData, classId) {
+  const classReference = getClassReference(classData, classId || preset.id);
+  const matchKeys = new Set([
+    normalizeLookupValue(classId),
+    normalizeLookupValue(preset.id),
+    normalizeLookupValue(preset.label),
+    normalizeLookupValue(classReference),
+  ]);
+
+  getClassMatchKeys(classData).forEach((value) => {
+    matchKeys.add(value);
+  });
+
+  return {
+    presetId: preset.id,
+    classReference,
+    matchKeys: Array.from(matchKeys).filter(Boolean),
+  };
+}
+
+function applyAdminClassSelection(selection) {
+  if (!selection?.presetId) {
+    return;
+  }
+
+  moveClassToFront(selection.presetId, selection.classReference);
+  state.activePresetId = selection.presetId;
+  setCheckedValue("class-preset", state.activePresetId);
+}
+
+function moveClassToFront(presetId, classReference) {
+  const presetState = state.presets[presetId];
+  if (!presetState?.classes?.length || !classReference) {
+    return;
+  }
+
+  const normalizedReference = normalizeLookupValue(classReference);
+  const classIndex = presetState.classes.findIndex((classData) =>
+    getClassMatchKeys(classData).includes(normalizedReference)
+  );
+
+  if (classIndex <= 0) {
+    return;
+  }
+
+  const [selectedClass] = presetState.classes.splice(classIndex, 1);
+  presetState.classes.unshift(selectedClass);
+}
+
+function getLastUsedClassForUser(uid) {
+  if (!uid) {
+    return "";
+  }
+
+  try {
+    return String(
+      localStorage.getItem(getLastUsedClassStorageKey(uid)) || ""
+    ).trim();
+  } catch (error) {
+    console.error(error);
+    return "";
+  }
+}
+
+function rememberLastUsedClassForCurrentAdmin(classReference = "") {
+  if (!shouldApplyAdminDefaults(state.currentUser, state.userProfile)) {
+    return;
+  }
+
+  const value = String(classReference || getActiveClassReference() || "").trim();
+  if (!value) {
+    return;
+  }
+
+  try {
+    localStorage.setItem(
+      getLastUsedClassStorageKey(state.currentUser.uid),
+      value
+    );
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+function getLastUsedClassStorageKey(uid) {
+  return `${LAST_USED_CLASS_KEY_PREFIX}:${uid}`;
+}
+
+function getActiveClassReference() {
+  const activePreset = getActivePresetState();
+  return getClassReference(activePreset.classes?.[0], state.activePresetId);
+}
+
+function getCardClassReference(card) {
+  if (!card) {
+    return state.activePresetId;
+  }
+
+  return getClassReference(
+    {
+      classId: card.dataset.classId || "",
+      className: card.querySelector(".class-name-input")?.value || "",
+    },
+    state.activePresetId
+  );
+}
+
+function getClassReference(classData, fallbackValue = "") {
+  return String(
+    classData?.classId ||
+      classData?.id ||
+      classData?.className ||
+      classData?.name ||
+      fallbackValue ||
+      ""
+  ).trim();
+}
+
+function getClassMatchKeys(classData) {
+  return [
+    classData?.classId,
+    classData?.id,
+    classData?.className,
+    classData?.name,
+  ]
+    .map((value) => normalizeLookupValue(value))
+    .filter(Boolean);
+}
+
+function normalizeLookupValue(value) {
+  return String(value || "")
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[\s/_-]+/g, "");
+}
+
 async function initializeApp() {
   cacheElements();
   bindGlobalEvents();
   initializeNativeBridge();
   restoreState();
+  await applyAuthenticatedAdminDefaults();
 
   renderActivePreset();
   syncPresetUi();
@@ -262,6 +769,7 @@ function normalizeSavedState(saved) {
 
 function sanitizeSavedClasses(classes) {
   return classes.map((classData) => ({
+    classId: String(classData?.classId || classData?.id || ""),
     className: String(classData?.className || ""),
     rawText: String(classData?.rawText || ""),
   }));
@@ -316,6 +824,7 @@ function captureActivePresetClassesFromDom() {
 
   const activePreset = getActivePresetState();
   activePreset.classes = collectClassCards().map((card) => ({
+    classId: String(card.dataset.classId || ""),
     className: card.querySelector(".class-name-input").value,
     rawText: card.querySelector(".paste-area").value,
   }));
@@ -421,6 +930,7 @@ function switchActivePreset(presetId) {
   renderActivePreset();
   syncPresetUi();
   persistState();
+  rememberLastUsedClassForCurrentAdmin();
   updateSummary();
 }
 
@@ -490,6 +1000,7 @@ function addClassCard(initialData = {}) {
   const removeBtn = card.querySelector(".remove-class-btn");
 
   const initialName = initialData.className || "";
+  card.dataset.classId = String(initialData.classId || initialData.id || "");
   nameInput.value = initialName;
   textArea.value = initialData.rawText || "";
   title.textContent = initialName || "새 반";
@@ -498,6 +1009,7 @@ function addClassCard(initialData = {}) {
     title.textContent = nameInput.value.trim() || "새 반";
     updateClassCard(card);
     persistState();
+    rememberLastUsedClassForCurrentAdmin(getCardClassReference(card));
     updateSummary();
   };
 
