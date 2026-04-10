@@ -125,6 +125,10 @@ function cacheElements() {
   elements.pickFolderBtn = document.getElementById("pick-folder-btn");
   elements.generateBtn = document.getElementById("generate-btn");
   elements.questionCountInput = document.getElementById("question-count");
+  elements.sessionCountInput = document.getElementById("session-count-input");
+  elements.sessionCountDisplay = document.getElementById("session-count-display");
+  elements.sessionCountDecreaseBtn = document.getElementById("session-count-decrease");
+  elements.sessionCountIncreaseBtn = document.getElementById("session-count-increase");
   elements.saveRootStatus = document.getElementById("save-root-status");
   elements.metricClassCount = document.getElementById("metric-class-count");
   elements.metricWordCount = document.getElementById("metric-word-count");
@@ -161,14 +165,15 @@ function bindGlobalEvents() {
     updateSummary();
   });
 
-  document.querySelectorAll("input[name='quiz-mode']").forEach((radio) => {
-    radio.addEventListener("change", () => {
-      persistState();
-      updateSummary();
-    });
+  elements.sessionCountDecreaseBtn.addEventListener("click", () => {
+    adjustSessionCount(-1);
   });
 
-  document.querySelectorAll("input[name='session-count']").forEach((radio) => {
+  elements.sessionCountIncreaseBtn.addEventListener("click", () => {
+    adjustSessionCount(1);
+  });
+
+  document.querySelectorAll("input[name='quiz-mode']").forEach((radio) => {
     radio.addEventListener("change", () => {
       persistState();
       updateSummary();
@@ -217,10 +222,7 @@ function applySettings(settings) {
     DEFAULT_SETTINGS.questionCount
   );
   setCheckedValue("quiz-mode", merged.quizMode);
-  setCheckedValue(
-    "session-count",
-    String(clampNumber(merged.sessionCount, 1, 5, DEFAULT_SETTINGS.sessionCount))
-  );
+  setSessionCount(merged.sessionCount);
 }
 
 function normalizeSavedState(saved) {
@@ -292,12 +294,7 @@ function getSettings() {
       100,
       DEFAULT_SETTINGS.questionCount
     ),
-    sessionCount: clampNumber(
-      Number(getCheckedValue("session-count", DEFAULT_SETTINGS.sessionCount)),
-      1,
-      5,
-      DEFAULT_SETTINGS.sessionCount
-    ),
+    sessionCount: getSessionCount(),
   };
 }
 
@@ -842,12 +839,21 @@ function updateSummary() {
     0
   );
 
-  elements.metricClassCount.textContent = String(classModels.length);
-  elements.metricWordCount.textContent = String(totalWords);
-  elements.metricPdfCount.textContent = String(
-    classModels.length * settings.sessionCount * 2
-  );
-  elements.metricFolderName.textContent = state.saveRootName || "미연결";
+  if (elements.metricClassCount) {
+    elements.metricClassCount.textContent = String(classModels.length);
+  }
+
+  if (elements.metricWordCount) {
+    elements.metricWordCount.textContent = String(totalWords);
+  }
+
+  if (elements.metricPdfCount) {
+    elements.metricPdfCount.textContent = String(
+      classModels.length * settings.sessionCount * 2
+    );
+  }
+
+  setElementTextAndTitle(elements.metricFolderName, state.saveRootName || "미연결");
 
   if (!classModels.length) {
     setValidationNotes([]);
@@ -1118,37 +1124,42 @@ function syncSaveRootUi() {
     return;
   }
 
+  const disconnectedLabel = "\uBBF8\uC5F0\uACB0";
+  const folderLabel = state.saveRootName || disconnectedLabel;
+  const compactFolderLabel = state.saveRootName
+    ? getCompactSaveRootLabel(state.saveRootName)
+    : disconnectedLabel;
+
   if (hasNativeHost()) {
     if (state.saveRootHandle) {
-      elements.saveRootStatus.textContent =
-        `${state.saveRootName} 폴더가 앱에 저장되었습니다. 생성 시 날짜 폴더와 반별 폴더를 자동으로 만듭니다.`;
-      elements.pickFolderBtn.textContent = "저장 폴더 변경";
+      setElementTextAndTitle(elements.saveRootStatus, compactFolderLabel, folderLabel);
+      elements.pickFolderBtn.textContent = "\uC800\uC7A5 \uD3F4\uB354 \uBCC0\uACBD";
       return;
     }
 
-    elements.saveRootStatus.textContent =
-      "아직 저장 폴더가 설정되지 않았습니다. 버튼을 눌러 저장 루트를 한 번만 선택해 주세요.";
-    elements.pickFolderBtn.textContent = "저장 폴더 연결";
+    setElementTextAndTitle(elements.saveRootStatus, disconnectedLabel);
+    elements.pickFolderBtn.textContent = "\uC800\uC7A5 \uD3F4\uB354 \uC5F0\uACB0";
     return;
   }
 
   if (state.saveRootHandle) {
-    elements.saveRootStatus.textContent =
-      `${state.saveRootName} 폴더가 연결되었습니다. 생성 시 날짜 폴더와 반별 폴더를 자동으로 만듭니다.`;
-    elements.pickFolderBtn.textContent = "저장 폴더 변경";
+    setElementTextAndTitle(elements.saveRootStatus, compactFolderLabel, folderLabel);
+    elements.pickFolderBtn.textContent = "\uC800\uC7A5 \uD3F4\uB354 \uBCC0\uACBD";
     return;
   }
 
   if (state.rememberedSaveRootHandle && state.saveRootName) {
-    elements.saveRootStatus.textContent =
-      `${state.saveRootName} 폴더를 기억하고 있습니다. 버튼을 한 번 누르면 다시 연결을 시도하고, 안 되면 다른 폴더를 선택할 수 있습니다.`;
-    elements.pickFolderBtn.textContent = "저장 폴더 다시 연결";
+    setElementTextAndTitle(
+      elements.saveRootStatus,
+      compactFolderLabel,
+      state.saveRootName
+    );
+    elements.pickFolderBtn.textContent = "\uC800\uC7A5 \uD3F4\uB354 \uB2E4\uC2DC \uC5F0\uACB0";
     return;
   }
 
-  elements.saveRootStatus.textContent =
-    "아직 연결되지 않았습니다. 바탕화면 안에 새 폴더를 만든 뒤 그 폴더를 선택해 주세요.";
-  elements.pickFolderBtn.textContent = "저장 폴더 연결";
+  setElementTextAndTitle(elements.saveRootStatus, disconnectedLabel);
+  elements.pickFolderBtn.textContent = "\uC800\uC7A5 \uD3F4\uB354 \uC5F0\uACB0";
 }
 
 async function verifyDirectoryPermission(handle, requestIfNeeded) {
@@ -1930,6 +1941,90 @@ function waitForLayout() {
       });
     });
   });
+}
+
+function getCompactSaveRootLabel(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  const segments = raw.split(/[\\/]+/).filter(Boolean);
+  const primaryLabel = segments.length ? segments[segments.length - 1] : raw;
+
+  return shortenMiddle(primaryLabel, 18);
+}
+
+function shortenMiddle(value, maxLength) {
+  const text = String(value ?? "");
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  const safeMaxLength = Math.max(7, maxLength);
+  const omission = "...";
+  const visibleLength = safeMaxLength - omission.length;
+  const frontLength = Math.ceil(visibleLength / 2);
+  const backLength = Math.floor(visibleLength / 2);
+  return `${text.slice(0, frontLength)}${omission}${text.slice(-backLength)}`;
+}
+
+function setElementTextAndTitle(element, text, titleText = text) {
+  if (!element) {
+    return;
+  }
+
+  const value = String(text ?? "");
+  const titleValue = String(titleText ?? value);
+  element.textContent = value;
+  element.title = titleValue;
+}
+
+function adjustSessionCount(delta) {
+  const currentValue = getSessionCount();
+  const nextValue = setSessionCount(currentValue + delta);
+
+  if (nextValue === currentValue) {
+    return;
+  }
+
+  persistState();
+  updateSummary();
+}
+
+function getSessionCount() {
+  return clampNumber(
+    Number(elements.sessionCountInput?.value),
+    1,
+    5,
+    DEFAULT_SETTINGS.sessionCount
+  );
+}
+
+function setSessionCount(value) {
+  const nextValue = clampNumber(value, 1, 5, DEFAULT_SETTINGS.sessionCount);
+
+  if (elements.sessionCountInput) {
+    elements.sessionCountInput.value = String(nextValue);
+  }
+
+  if (elements.sessionCountDisplay) {
+    elements.sessionCountDisplay.textContent = `${nextValue}차`;
+  }
+
+  if (elements.sessionCountDecreaseBtn) {
+    const canDecrease = nextValue > 1;
+    elements.sessionCountDecreaseBtn.disabled = !canDecrease;
+    elements.sessionCountDecreaseBtn.setAttribute("aria-disabled", String(!canDecrease));
+  }
+
+  if (elements.sessionCountIncreaseBtn) {
+    const canIncrease = nextValue < 5;
+    elements.sessionCountIncreaseBtn.disabled = !canIncrease;
+    elements.sessionCountIncreaseBtn.setAttribute("aria-disabled", String(!canIncrease));
+  }
+
+  return nextValue;
 }
 
 function setCheckedValue(name, value) {

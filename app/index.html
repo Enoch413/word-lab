@@ -12,133 +12,123 @@
 </head>
 <body>
   <div class="page-shell">
-    <aside class="hero-panel">
-      <div class="hero-card">
-        <div class="hero-kicker">CODE LAB</div>
-        <div class="hero-logo">WORD LAB</div>
-        <p class="hero-copy">반별 단어를 먼저 입력하고, 설정한 차수만큼 시험지를 한 번에 생성하세요.</p>
+    <aside class="hero-panel sidebar-panel">
+      <div class="sidebar-stack">
+        <section class="control-card save-root-card">
+          <div class="field-block">
+            <label class="field-title">저장 루트</label>
+            <div class="save-root-box">
+              <div id="save-root-status" aria-live="polite">미연결</div>
+              <button class="btn btn-blue" type="button" id="pick-folder-btn">저장 폴더 연결</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="action-card action-card-sidebar">
+          <button class="btn btn-green btn-xl" type="button" id="generate-btn">PDF 생성 시작</button>
+        </section>
+
+        <section class="summary-card summary-card-compact">
+          <div class="summary-metrics">
+            <div class="metric">
+              <span class="metric-label">반 수</span>
+              <strong id="metric-class-count">0</strong>
+            </div>
+            <div class="metric">
+              <span class="metric-label metric-label-multiline">생성 예정 PDF<br>(답지 포함)</span>
+              <strong id="metric-pdf-count">0</strong>
+            </div>
+          </div>
+        </section>
+
+        <div class="summary-notes">
+          <div class="status-panel success" id="run-status">아직 생성 전입니다.</div>
+        </div>
+
+        <section class="control-card preset-card">
+          <div class="preset-grid">
+            <div class="field-block">
+              <label class="field-title">반 그룹</label>
+              <div class="segmented compact" id="preset-toggle">
+                <label class="segment">
+                  <input type="radio" name="class-preset" value="mon-wed" checked>
+                  <span>월수반</span>
+                </label>
+                <label class="segment">
+                  <input type="radio" name="class-preset" value="tue-thu">
+                  <span>화목반</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="preset-tools">
+              <button class="btn btn-ghost" type="button" id="toggle-layout-lock-btn">반 구성 잠금</button>
+              <button class="btn btn-ghost" type="button" id="import-snapshot-btn">파일 복원</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="control-card">
+          <div class="card-head">
+            <div>
+              <div class="card-label">공통 설정</div>
+              <h3>시험 생성 옵션</h3>
+            </div>
+          </div>
+
+          <div class="control-grid">
+            <div class="field-block">
+              <label class="field-title">출제 방향</label>
+              <div class="segmented" id="mode-toggle">
+                <label class="segment">
+                  <input type="radio" name="quiz-mode" value="word-to-meaning" checked>
+                  <span>영 - 한</span>
+                </label>
+                <label class="segment">
+                  <input type="radio" name="quiz-mode" value="meaning-to-word">
+                  <span>한 - 영</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="field-block">
+              <label class="field-title" for="question-count">시험지당 문항 수</label>
+              <input class="text-input" id="question-count" type="number" min="5" max="100" step="1" value="50">
+            </div>
+
+            <div class="field-block">
+              <label class="field-title">생성할 차수</label>
+              <div class="session-stepper" id="session-toggle">
+                <button class="stepper-btn" type="button" id="session-count-decrease" aria-label="차수 줄이기">&#8592;</button>
+                <div class="stepper-display" aria-live="polite">
+                  <span class="stepper-value" id="session-count-display">3차</span>
+                </div>
+                <button class="stepper-btn" type="button" id="session-count-increase" aria-label="차수 늘리기">&#8594;</button>
+                <input type="hidden" id="session-count-input" value="3">
+              </div>
+            </div>
+          </div>
+        </section>
+
       </div>
     </aside>
 
     <main class="workspace-panel">
-      <section class="control-card preset-card">
-        <div class="preset-grid">
-          <div class="field-block">
-            <label class="field-title">반 그룹</label>
-            <div class="segmented compact" id="preset-toggle">
-              <label class="segment">
-                <input type="radio" name="class-preset" value="mon-wed" checked>
-                <span>월/수 반</span>
-              </label>
-              <label class="segment">
-                <input type="radio" name="class-preset" value="tue-thu">
-                <span>화/목 반</span>
-              </label>
+      <div class="workspace-stack">
+        <section class="class-section">
+          <div class="card-head">
+            <div>
+              <div class="card-label">반별 입력</div>
+              <h3>엑셀에서 붙여넣기</h3>
+            </div>
+            <div class="card-actions">
+              <button class="btn btn-ghost" type="button" id="add-class-btn">반 추가</button>
+              <button class="btn btn-ghost" type="button" id="seed-demo-btn">예시 채우기</button>
             </div>
           </div>
-
-          <div class="preset-tools">
-            <button class="btn btn-ghost" type="button" id="toggle-layout-lock-btn">반 구성 잠금</button>
-            <button class="btn btn-ghost" type="button" id="import-snapshot-btn">복원 파일 불러오기</button>
-          </div>
-        </div>
-      </section>
-
-      <section class="control-card">
-        <div class="card-head">
-          <div>
-            <div class="card-label">공통 설정</div>
-            <h3>시험 생성 옵션</h3>
-          </div>
-        </div>
-
-        <div class="control-grid">
-          <div class="field-block">
-            <label class="field-title">출제 방향</label>
-            <div class="segmented" id="mode-toggle">
-              <label class="segment">
-                <input type="radio" name="quiz-mode" value="word-to-meaning" checked>
-                <span>영단어 보고 뜻 쓰기</span>
-              </label>
-              <label class="segment">
-                <input type="radio" name="quiz-mode" value="meaning-to-word">
-                <span>뜻 보고 영단어 쓰기</span>
-              </label>
-            </div>
-          </div>
-
-          <div class="field-block">
-            <label class="field-title" for="question-count">시험지당 문항 수</label>
-            <input class="text-input" id="question-count" type="number" min="5" max="100" step="1" value="50">
-          </div>
-
-          <div class="field-block">
-            <label class="field-title">생성할 차수</label>
-            <div class="segmented compact" id="session-toggle">
-              <label class="segment"><input type="radio" name="session-count" value="1"><span>1차</span></label>
-              <label class="segment"><input type="radio" name="session-count" value="2"><span>2차</span></label>
-              <label class="segment"><input type="radio" name="session-count" value="3" checked><span>3차</span></label>
-              <label class="segment"><input type="radio" name="session-count" value="4"><span>4차</span></label>
-              <label class="segment"><input type="radio" name="session-count" value="5"><span>5차</span></label>
-            </div>
-          </div>
-
-          <div class="field-block">
-            <label class="field-title">저장 루트</label>
-            <div class="save-root-box">
-              <div id="save-root-status">아직 연결되지 않았습니다. 바탕화면 안에 새 폴더를 만든 뒤 그 폴더를 선택해 주세요.</div>
-              <button class="btn btn-blue" type="button" id="pick-folder-btn">저장 폴더 연결</button>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="summary-card">
-        <div class="summary-metrics">
-          <div class="metric">
-            <span class="metric-label">반 수</span>
-            <strong id="metric-class-count">0</strong>
-          </div>
-          <div class="metric">
-            <span class="metric-label">전체 단어 수</span>
-            <strong id="metric-word-count">0</strong>
-            </div>
-            <div class="metric">
-              <span class="metric-label">생성 예정 PDF(답지 포함)</span>
-              <strong id="metric-pdf-count">0</strong>
-            </div>
-          <div class="metric">
-            <span class="metric-label">저장 폴더</span>
-            <strong id="metric-folder-name">미연결</strong>
-          </div>
-        </div>
-        <div class="summary-notes">
-          <div class="status-panel success" id="run-status">아직 생성 전입니다.</div>
-        </div>
-      </section>
-
-      <section class="class-section">
-        <div class="card-head">
-          <div>
-            <div class="card-label">반별 입력</div>
-            <h3>엑셀에서 붙여넣기</h3>
-          </div>
-          <div class="card-actions">
-            <button class="btn btn-ghost" type="button" id="add-class-btn">반 추가</button>
-            <button class="btn btn-ghost" type="button" id="seed-demo-btn">예시 채우기</button>
-          </div>
-        </div>
-        <div class="class-list" id="class-list"></div>
-      </section>
-
-      <section class="action-card">
-        <div class="action-copy">
-          <div class="card-label">실행</div>
-          <h3>모든 반 시험지 생성</h3>
-          <p>선택한 차수만큼 각 반 폴더 안에 PDF가 저장됩니다.</p>
-        </div>
-        <button class="btn btn-green btn-xl" type="button" id="generate-btn">PDF 생성 시작</button>
-      </section>
+          <div class="class-list" id="class-list"></div>
+        </section>
+      </div>
     </main>
   </div>
 
@@ -155,7 +145,7 @@
       <div class="class-form-grid">
         <label class="field-block">
           <span class="field-title">반 이름</span>
-          <input class="text-input class-name-input" type="text" placeholder="예: 2강서A">
+          <input class="text-input class-name-input" type="text" placeholder="예: 2강의실A">
         </label>
         <div class="stat-chip-group">
           <span class="stat-chip"><strong class="valid-count">0</strong> 유효 단어</span>
