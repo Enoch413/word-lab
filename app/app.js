@@ -1311,7 +1311,8 @@ async function handleGenerate() {
     const generationTarget = await createGenerationTarget(dateFolderName);
     let completedFiles = 0;
     const totalFiles = printableClassModels.length * settings.sessionCount * 2;
-    let snapshotSaved = false;
+    let zipSaved = false;
+    const zipEntries = [];
 
     for (const model of printableClassModels) {
       const safeClassName = sanitizeFilePart(model.className);
@@ -1345,6 +1346,10 @@ async function handleGenerate() {
         );
         const fileName = `${safeClassName}_${sessionNumber}차.pdf`;
         await writeGeneratedPdfFile(generationTarget, safeClassName, fileName, pdfBuffer);
+        zipEntries.push({
+          path: `${dateFolderName}/${safeClassName}/${fileName}`,
+          data: pdfBuffer,
+        });
         completedFiles += 1;
 
         setRunStatus("PDF 생성 중...", "running");
@@ -1368,21 +1373,42 @@ async function handleGenerate() {
           answerFileName,
           answerPdfBuffer
         );
+        zipEntries.push({
+          path: `${dateFolderName}/${safeClassName}/${answerFileName}`,
+          data: answerPdfBuffer,
+        });
         completedFiles += 1;
       }
     }
 
     try {
       const snapshotPayload = buildSnapshotPayload(dateFolderName);
-      await writeGeneratedTextFile(generationTarget, SNAPSHOT_FILE_NAME, JSON.stringify(snapshotPayload, null, 2));
-      snapshotSaved = true;
+      const snapshotText = JSON.stringify(snapshotPayload, null, 2);
+      await writeGeneratedTextFile(generationTarget, SNAPSHOT_FILE_NAME, snapshotText);
+      zipEntries.push({
+        path: `${dateFolderName}/${SNAPSHOT_FILE_NAME}`,
+        data: snapshotText,
+      });
     } catch (snapshotError) {
       console.error(snapshotError);
       warnings.push(`복원 파일 저장 실패: ${formatErrorDetail(snapshotError)}`);
     }
 
+    try {
+      const zipBuffer = createZipArchive(zipEntries);
+      await writeGeneratedZipFile(generationTarget, `${dateFolderName}.zip`, zipBuffer);
+      zipSaved = true;
+    } catch (zipError) {
+      console.error(zipError);
+      warnings.push(`ZIP 저장 실패: ${formatErrorDetail(zipError)}`);
+    }
+
     setRunStatus("PDF 생성 완료", "success");
-    showToast(`PDF ${totalFiles}개 생성이 끝났습니다. 답지도 함께 저장했습니다.`);
+    showToast(
+      zipSaved
+        ? `PDF ${totalFiles}개와 ZIP 1개 생성이 끝났습니다.`
+        : `PDF ${totalFiles}개 생성이 끝났습니다. ZIP 생성은 실패했습니다.`
+    );
   } catch (error) {
     console.error(error);
     if (isSaveRootAccessError(error)) {
@@ -1753,6 +1779,7 @@ async function createGenerationTarget(dateFolderName) {
 
   return {
     mode: "browser",
+    saveRootFolder: state.saveRootHandle,
     dateFolder: await ensureDirectory(state.saveRootHandle, dateFolderName),
     classFolders: new Map(),
   };
@@ -1792,7 +1819,21 @@ async function writeGeneratedTextFile(target, fileName, text) {
   await writeTextFile(target.dateFolder, fileName, text);
 }
 
-function arrayBufferToBase64(buffer) {
+async function writeGeneratedZipFile(target, fileName, zipBuffer) {
+  if (target.mode === "native") {
+    const base64Data = await arrayBufferToBase64(zipBuffer, "application/zip");
+    await callNativeHost("saveBinaryFile", {
+      dateFolderName: target.dateFolderName,
+      fileName,
+      base64Data,
+    });
+    return;
+  }
+
+  await writeBinaryFile(target.saveRootFolder, fileName, zipBuffer);
+}
+
+function arrayBufferToBase64(buffer, mimeType = "application/octet-stream") {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -1800,8 +1841,8 @@ function arrayBufferToBase64(buffer) {
       const [, base64 = ""] = dataUrl.split(",", 2);
       resolve(base64);
     };
-    reader.onerror = () => reject(reader.error || new Error("PDF 인코딩에 실패했습니다."));
-    reader.readAsDataURL(new Blob([buffer], { type: "application/pdf" }));
+    reader.onerror = () => reject(reader.error || new Error("파일 인코딩에 실패했습니다."));
+    reader.readAsDataURL(new Blob([buffer], { type: mimeType }));
   });
 }
 
@@ -1838,9 +1879,13 @@ async function renderPageToPdfBuffer(page, documentTitle) {
 }
 
 async function writePdfFile(folderHandle, fileName, pdfBuffer) {
+  await writeBinaryFile(folderHandle, fileName, pdfBuffer);
+}
+
+async function writeBinaryFile(folderHandle, fileName, binaryBuffer) {
   const fileHandle = await folderHandle.getFileHandle(fileName, { create: true });
   const writable = await fileHandle.createWritable();
-  await writable.write(pdfBuffer);
+  await writable.write(binaryBuffer);
   await writable.close();
 }
 
@@ -1853,6 +1898,175 @@ async function writeTextFile(folderHandle, fileName, text) {
 
 async function ensureDirectory(parentHandle, folderName) {
   return parentHandle.getDirectoryHandle(folderName, { create: true });
+}
+
+function createZipArchive(files) {
+  const normalizedEntries = files.map((file) => {
+    const path = normalizeZipPath(file.path);
+    const nameBytes = new TextEncoder().encode(path);
+    const dataBytes = toUint8Array(file.data);
+    const crc32 = computeCrc32(dataBytes);
+    const modifiedAt = file.modifiedAt instanceof Date ? file.modifiedAt : new Date();
+    const { dosDate, dosTime } = getDosDateTime(modifiedAt);
+
+    return {
+      path,
+      nameBytes,
+      dataBytes,
+      crc32,
+      dosDate,
+      dosTime,
+    };
+  });
+
+  let localSize = 0;
+  let centralSize = 0;
+  const localRecords = [];
+  const centralRecords = [];
+
+  normalizedEntries.forEach((entry) => {
+    const localOffset = localSize;
+    const localRecord = new Uint8Array(30 + entry.nameBytes.length + entry.dataBytes.length);
+    const localView = new DataView(localRecord.buffer);
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint16(6, 0x0800, true);
+    localView.setUint16(8, 0, true);
+    localView.setUint16(10, entry.dosTime, true);
+    localView.setUint16(12, entry.dosDate, true);
+    localView.setUint32(14, entry.crc32, true);
+    localView.setUint32(18, entry.dataBytes.length, true);
+    localView.setUint32(22, entry.dataBytes.length, true);
+    localView.setUint16(26, entry.nameBytes.length, true);
+    localView.setUint16(28, 0, true);
+    localRecord.set(entry.nameBytes, 30);
+    localRecord.set(entry.dataBytes, 30 + entry.nameBytes.length);
+    localRecords.push(localRecord);
+    localSize += localRecord.length;
+
+    const centralRecord = new Uint8Array(46 + entry.nameBytes.length);
+    const centralView = new DataView(centralRecord.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint16(8, 0x0800, true);
+    centralView.setUint16(10, 0, true);
+    centralView.setUint16(12, entry.dosTime, true);
+    centralView.setUint16(14, entry.dosDate, true);
+    centralView.setUint32(16, entry.crc32, true);
+    centralView.setUint32(20, entry.dataBytes.length, true);
+    centralView.setUint32(24, entry.dataBytes.length, true);
+    centralView.setUint16(28, entry.nameBytes.length, true);
+    centralView.setUint16(30, 0, true);
+    centralView.setUint16(32, 0, true);
+    centralView.setUint16(34, 0, true);
+    centralView.setUint16(36, 0, true);
+    centralView.setUint32(38, 0, true);
+    centralView.setUint32(42, localOffset, true);
+    centralRecord.set(entry.nameBytes, 46);
+    centralRecords.push(centralRecord);
+    centralSize += centralRecord.length;
+  });
+
+  const endRecord = new Uint8Array(22);
+  const endView = new DataView(endRecord.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(4, 0, true);
+  endView.setUint16(6, 0, true);
+  endView.setUint16(8, normalizedEntries.length, true);
+  endView.setUint16(10, normalizedEntries.length, true);
+  endView.setUint32(12, centralSize, true);
+  endView.setUint32(16, localSize, true);
+  endView.setUint16(20, 0, true);
+
+  const zipBuffer = new Uint8Array(localSize + centralSize + endRecord.length);
+  let cursor = 0;
+
+  localRecords.forEach((record) => {
+    zipBuffer.set(record, cursor);
+    cursor += record.length;
+  });
+
+  centralRecords.forEach((record) => {
+    zipBuffer.set(record, cursor);
+    cursor += record.length;
+  });
+
+  zipBuffer.set(endRecord, cursor);
+  return zipBuffer.buffer;
+}
+
+function normalizeZipPath(path) {
+  return String(path || "")
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter(Boolean)
+    .join("/");
+}
+
+function toUint8Array(data) {
+  if (data instanceof Uint8Array) {
+    return data;
+  }
+
+  if (data instanceof ArrayBuffer) {
+    return new Uint8Array(data);
+  }
+
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+
+  if (typeof data === "string") {
+    return new TextEncoder().encode(data);
+  }
+
+  throw new Error("ZIP 파일 데이터 형식을 처리할 수 없습니다.");
+}
+
+function computeCrc32(bytes) {
+  const table = getCrc32Table();
+  let crc = 0xffffffff;
+
+  for (let index = 0; index < bytes.length; index += 1) {
+    crc = table[(crc ^ bytes[index]) & 0xff] ^ (crc >>> 8);
+  }
+
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+let crc32Table = null;
+
+function getCrc32Table() {
+  if (crc32Table) {
+    return crc32Table;
+  }
+
+  crc32Table = new Uint32Array(256);
+
+  for (let index = 0; index < 256; index += 1) {
+    let value = index;
+    for (let shift = 0; shift < 8; shift += 1) {
+      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    }
+    crc32Table[index] = value >>> 0;
+  }
+
+  return crc32Table;
+}
+
+function getDosDateTime(date) {
+  const year = Math.max(1980, Math.min(2107, date.getFullYear()));
+  const month = Math.max(1, date.getMonth() + 1);
+  const day = Math.max(1, date.getDate());
+  const hours = Math.max(0, Math.min(23, date.getHours()));
+  const minutes = Math.max(0, Math.min(59, date.getMinutes()));
+  const seconds = Math.max(0, Math.min(59, date.getSeconds()));
+
+  return {
+    dosDate: ((year - 1980) << 9) | (month << 5) | day,
+    dosTime: (hours << 11) | (minutes << 5) | Math.floor(seconds / 2),
+  };
 }
 
 function setGenerating(isGenerating) {
