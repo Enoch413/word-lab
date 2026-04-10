@@ -831,16 +831,30 @@ function filterMeaningfulClassModels(classModels) {
   );
 }
 
+function filterPrintableClassModels(classModels) {
+  return filterMeaningfulClassModels(classModels).filter(
+    (model) => model.className.trim() && model.parsed.entries.length > 0
+  );
+}
+
+function getEffectiveQuestionCount(model, settings) {
+  return Math.max(
+    0,
+    Math.min(settings.questionCount, model.parsed.entries.length)
+  );
+}
+
 function updateSummary() {
   const settings = getSettings();
   const classModels = filterMeaningfulClassModels(collectClassModels());
-  const totalWords = classModels.reduce(
+  const printableClassModels = filterPrintableClassModels(classModels);
+  const totalWords = printableClassModels.reduce(
     (sum, model) => sum + model.parsed.entries.length,
     0
   );
 
   if (elements.metricClassCount) {
-    elements.metricClassCount.textContent = String(classModels.length);
+    elements.metricClassCount.textContent = String(printableClassModels.length);
   }
 
   if (elements.metricWordCount) {
@@ -849,7 +863,7 @@ function updateSummary() {
 
   if (elements.metricPdfCount) {
     elements.metricPdfCount.textContent = String(
-      classModels.length * settings.sessionCount * 2
+      printableClassModels.length * settings.sessionCount * 2
     );
   }
 
@@ -883,10 +897,14 @@ function validateClassModels(classModels, settings, options = {}) {
 
     if (!model.className.trim()) {
       messages.push({ type: "error", text: `${label}: 반 이름이 비어 있습니다.` });
+      return;
     }
 
     if (!model.parsed.entries.length) {
-      messages.push({ type: "error", text: `${label}: 유효한 단어가 없습니다.` });
+      messages.push({
+        type: "warning",
+        text: `${label}: 유효한 단어가 없어 이번 생성에서는 건너뜁니다.`,
+      });
       return;
     }
 
@@ -895,27 +913,29 @@ function validateClassModels(classModels, settings, options = {}) {
         type: "error",
         text: `${label}: 저장 폴더명이 겹치는 반이 있습니다.`,
       });
+      return;
     }
     names.set(folderKey, true);
 
-    if (model.parsed.entries.length < settings.questionCount) {
+    const questionCount = getEffectiveQuestionCount(model, settings);
+
+    if (questionCount < settings.questionCount) {
       messages.push({
-        type: "error",
-        text: `${label}: 단어 ${model.parsed.entries.length}개로는 문항 ${settings.questionCount}개를 만들 수 없습니다.`,
+        type: "warning",
+        text: `${label}: 단어가 ${model.parsed.entries.length}개이므로 문항은 ${questionCount}개만 출력됩니다.`,
       });
-      return;
     }
 
-    const totalNeeded = settings.questionCount * settings.sessionCount;
+    const totalNeeded = questionCount * settings.sessionCount;
     if (model.parsed.entries.length < totalNeeded) {
       messages.push({
         type: "warning",
-        text: `${label}: 차수 간 완전 무중복은 불가능합니다. ${model.parsed.entries.length}개 단어로 ${settings.sessionCount}차 x ${settings.questionCount}문항을 만들면 총 ${totalNeeded}칸이 필요합니다.`,
+        text: `${label}: 차수 간 완전 무중복은 불가능합니다. ${model.parsed.entries.length}개 단어로 ${settings.sessionCount}차 x ${questionCount}문항을 만들면 총 ${totalNeeded}칸이 필요합니다.`,
       });
-    } else if (options.includeSuccess) {
+    } else if (options.includeSuccess && questionCount) {
       messages.push({
         type: "success",
-        text: `${label}: ${settings.sessionCount}차까지 완전 무중복 랜덤 구성이 가능합니다.`,
+        text: `${label}: ${settings.sessionCount}차까지 ${questionCount}문항 기준 완전 무중복 랜덤 구성이 가능합니다.`,
       });
     }
   });
@@ -1254,6 +1274,7 @@ async function handleGenerate() {
   const settings = getSettings();
   const allClassModels = collectClassModels();
   const classModels = filterMeaningfulClassModels(allClassModels);
+  const printableClassModels = filterPrintableClassModels(classModels);
   const validationMessages = validateClassModels(classModels, settings);
   const blockingErrors = validationMessages.filter(
     (message) => message.type === "error"
@@ -1262,13 +1283,19 @@ async function handleGenerate() {
   setValidationNotes(validationMessages);
 
   if (blockingErrors.length) {
-    setRunStatus("오류를 먼저 해결한 뒤 다시 생성해 주세요.", "error");
+    setRunStatus("PDF 생성 실패", "error");
     showToast("입력 오류가 있어 생성할 수 없습니다.");
     return;
   }
 
+  if (!printableClassModels.length) {
+    setRunStatus("PDF 생성 실패", "error");
+    showToast("생성할 단어가 있는 반이 없습니다.");
+    return;
+  }
+
   if (!(await ensureWritableSaveRootHandle())) {
-    setRunStatus("저장 폴더가 연결되지 않아 생성이 중단되었습니다.", "error");
+    setRunStatus("PDF 생성 실패", "error");
     return;
   }
 
@@ -1283,15 +1310,16 @@ async function handleGenerate() {
   try {
     const generationTarget = await createGenerationTarget(dateFolderName);
     let completedFiles = 0;
-    const totalFiles = classModels.length * settings.sessionCount * 2;
+    const totalFiles = printableClassModels.length * settings.sessionCount * 2;
     let snapshotSaved = false;
 
-    for (const model of classModels) {
+    for (const model of printableClassModels) {
       const safeClassName = sanitizeFilePart(model.className);
+      const questionCount = getEffectiveQuestionCount(model, settings);
       const sessionBundles = buildSessionBundles(
         model.parsed.entries,
         settings.sessionCount,
-        settings.questionCount
+        questionCount
       );
 
       if (!sessionBundles.fullyUnique) {
@@ -1300,10 +1328,7 @@ async function handleGenerate() {
 
       for (let index = 0; index < sessionBundles.sessions.length; index += 1) {
         const sessionNumber = index + 1;
-        setRunStatus(
-          `${model.className} ${sessionNumber}차 PDF 생성 중... (${completedFiles + 1}/${totalFiles})`,
-          "running"
-        );
+        setRunStatus("PDF 생성 중...", "running");
         const items = sessionBundles.sessions[index];
 
         const page = buildSheetPage({
@@ -1322,10 +1347,7 @@ async function handleGenerate() {
         await writeGeneratedPdfFile(generationTarget, safeClassName, fileName, pdfBuffer);
         completedFiles += 1;
 
-        setRunStatus(
-          `${model.className} ${sessionNumber}차 답지 생성 중... (${completedFiles + 1}/${totalFiles})`,
-          "running"
-        );
+        setRunStatus("PDF 생성 중...", "running");
 
         const answerPage = buildAnswerSheetPage({
           className: model.className,
@@ -1359,20 +1381,7 @@ async function handleGenerate() {
       warnings.push(`복원 파일 저장 실패: ${formatErrorDetail(snapshotError)}`);
     }
 
-    const summary = [
-      `완료: 총 ${totalFiles}개 PDF(시험지+답지)를 저장했습니다.`,
-      `경로: ${state.saveRootName}\\${dateFolderName}\\반별 폴더`,
-    ];
-
-    if (snapshotSaved) {
-      summary.push(`복원 파일: ${SNAPSHOT_FILE_NAME}`);
-    }
-
-    if (warnings.length) {
-      summary.push(`주의: ${warnings.length}개 경고가 있습니다. 위 안내를 확인해 주세요.`);
-    }
-
-    setRunStatus(summary.join(" "), "success");
+    setRunStatus("PDF 생성 완료", "success");
     showToast(`PDF ${totalFiles}개 생성이 끝났습니다. 답지도 함께 저장했습니다.`);
   } catch (error) {
     console.error(error);
@@ -1380,18 +1389,12 @@ async function handleGenerate() {
       state.saveRootHandle = null;
       syncSaveRootUi();
       updateSummary();
-      setRunStatus(
-        `저장 폴더 권한이 끊겼습니다. 저장 폴더를 다시 연결해 주세요. (${formatErrorDetail(error)})`,
-        "error"
-      );
+      setRunStatus("PDF 생성 실패", "error");
       showToast("저장 폴더 권한이 끊겨 PDF를 저장하지 못했습니다.");
       return;
     }
 
-    setRunStatus(
-      `생성 중 오류가 발생했습니다. ${formatErrorDetail(error)}`,
-      "error"
-    );
+    setRunStatus("PDF 생성 실패", "error");
     showToast(`PDF 생성 중 오류: ${formatErrorDetail(error)}`);
   } finally {
     elements.renderStage.innerHTML = "";
