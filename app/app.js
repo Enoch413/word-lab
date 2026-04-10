@@ -5,6 +5,7 @@ const SAVE_ROOT_HANDLE_KEY = "save-root";
 const SNAPSHOT_FILE_NAME = "WORD_LAB_단어복원.json";
 const MAX_PREVIEW_ITEMS = 5;
 const LAB_STORAGE_NAME = "WORD LAB";
+const ADMIN_STATE_STORAGE_KEY_PREFIX = `${STORAGE_KEY}:${LAB_STORAGE_NAME}:admin`;
 const LAST_USED_CLASS_KEY_PREFIX = `${LAB_STORAGE_NAME}:last-class`;
 const FIREBASE_SDK_VERSION = "10.12.2";
 const FIREBASE_CONFIG_GLOBAL_KEYS = [
@@ -114,11 +115,7 @@ function applyNativeSaveRootStatus(status) {
 }
 
 // Auth/profile lookup is optional. If it fails, the app keeps the existing local fallback behavior.
-async function applyAuthenticatedAdminDefaults() {
-  const authContext = await loadCurrentUserProfile();
-  state.currentUser = authContext?.user || null;
-  state.userProfile = authContext?.profile || null;
-
+function applyAuthenticatedAdminDefaults() {
   if (!shouldApplyAdminDefaults(state.currentUser, state.userProfile)) {
     return;
   }
@@ -133,6 +130,12 @@ async function applyAuthenticatedAdminDefaults() {
 
   applyAdminClassSelection(selection);
   rememberLastUsedClassForCurrentAdmin(selection.classReference);
+}
+
+async function initializeCurrentUserContext() {
+  const authContext = await loadCurrentUserProfile();
+  state.currentUser = authContext?.user || null;
+  state.userProfile = authContext?.profile || null;
 }
 
 function shouldApplyAdminDefaults(user, profile) {
@@ -606,12 +609,68 @@ function normalizeLookupValue(value) {
     .replace(/[\s/_-]+/g, "");
 }
 
+function getStateStorageKey(user = state.currentUser, profile = state.userProfile) {
+  if (shouldApplyAdminDefaults(user, profile)) {
+    return `${ADMIN_STATE_STORAGE_KEY_PREFIX}:${user.uid}`;
+  }
+
+  return STORAGE_KEY;
+}
+
+function getStoredStateRaw() {
+  const candidates = [getStateStorageKey()];
+  if (shouldUseGlobalStateFallback(candidates[0])) {
+    candidates.push(STORAGE_KEY);
+  }
+
+  for (const key of candidates) {
+    try {
+      const value = localStorage.getItem(key);
+      if (value) {
+        return value;
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  return "";
+}
+
+function shouldUseGlobalStateFallback(primaryKey) {
+  if (primaryKey === STORAGE_KEY) {
+    return false;
+  }
+
+  return !hasStoredAdminScopedState();
+}
+
+function hasStoredAdminScopedState() {
+  try {
+    return Object.keys(localStorage).some((key) =>
+      String(key || "").startsWith(`${ADMIN_STATE_STORAGE_KEY_PREFIX}:`)
+    );
+  } catch (error) {
+    console.error(error);
+    return false;
+  }
+}
+
+function setStoredStateRaw(value) {
+  try {
+    localStorage.setItem(getStateStorageKey(), value);
+  } catch (error) {
+    console.error(error);
+  }
+}
+
 async function initializeApp() {
   cacheElements();
   bindGlobalEvents();
   initializeNativeBridge();
+  await initializeCurrentUserContext();
   restoreState();
-  await applyAuthenticatedAdminDefaults();
+  applyAuthenticatedAdminDefaults();
 
   renderActivePreset();
   syncPresetUi();
@@ -695,7 +754,7 @@ function bindGlobalEvents() {
 }
 
 function restoreState() {
-  const raw = localStorage.getItem(STORAGE_KEY);
+  const raw = getStoredStateRaw();
   if (!raw) {
     applySettings(DEFAULT_SETTINGS);
     state.presets = createDefaultPresets();
@@ -790,7 +849,7 @@ function persistState() {
     }, {}),
   };
 
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  setStoredStateRaw(JSON.stringify(payload));
 }
 
 function getSettings() {
