@@ -78,20 +78,6 @@
         <section class="control-card">
           <div class="control-grid">
             <div class="field-block">
-              <label class="field-title">출제 방향</label>
-              <div class="segmented" id="mode-toggle">
-                <label class="segment">
-                  <input type="radio" name="quiz-mode" value="word-to-meaning" checked>
-                  <span>영 - 한</span>
-                </label>
-                <label class="segment">
-                  <input type="radio" name="quiz-mode" value="meaning-to-word">
-                  <span>한 - 영</span>
-                </label>
-              </div>
-            </div>
-
-            <div class="field-block">
               <label class="field-title" for="question-count">시험지당 문항 수</label>
               <input class="text-input" id="question-count" type="number" min="5" max="100" step="1" value="50">
             </div>
@@ -146,6 +132,19 @@
           <span class="field-title">반 이름</span>
           <input class="text-input class-name-input" type="text" placeholder="예: 2강서B">
         </label>
+        <div class="field-block class-mode-field">
+          <span class="field-title">출제 방향</span>
+          <div class="segmented compact class-mode-toggle">
+            <label class="segment">
+              <input class="class-quiz-mode-input" type="radio" value="word-to-meaning" checked>
+              <span>영 - 한</span>
+            </label>
+            <label class="segment">
+              <input class="class-quiz-mode-input" type="radio" value="meaning-to-word">
+              <span>한 - 영</span>
+            </label>
+          </div>
+        </div>
         <div class="stat-chip-group">
           <span class="stat-chip"><strong class="valid-count">0</strong> 유효 단어</span>
           <span class="stat-chip"><strong class="merged-count">0</strong> 중복 합치기</span>

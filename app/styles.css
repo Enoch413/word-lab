@@ -627,10 +627,19 @@ button{
 
 .class-form-grid{
   display:grid;
-  grid-template-columns:minmax(220px, 320px) minmax(0,1fr);
+  grid-template-columns:minmax(220px, 320px) minmax(190px, 240px) minmax(0,1fr);
   gap:14px;
   align-items:end;
   margin-bottom:18px;
+}
+
+.class-mode-field{
+  min-width:0;
+}
+
+.class-mode-toggle .segment span{
+  min-height:52px;
+  padding:12px 14px;
 }
 
 .stat-chip-group{
