@@ -4,12 +4,13 @@ const HANDLE_STORE_NAME = "handles";
 const SAVE_ROOT_HANDLE_KEY = "save-root";
 const SNAPSHOT_FILE_NAME = "WORD_LAB_단어복원.json";
 const MAX_PREVIEW_ITEMS = 5;
+const DEFAULT_CLASS_QUIZ_MODE = "word-to-meaning";
+const PRINTABLE_ITEMS_PER_PAGE = 50;
 const CLASS_PRESET_CONFIG = [
   { id: "mon-wed", label: "월/수 반" },
   { id: "tue-thu", label: "화/목 반" },
 ];
 const DEFAULT_SETTINGS = {
-  quizMode: "word-to-meaning",
   questionCount: 50,
   sessionCount: 3,
 };
@@ -173,13 +174,6 @@ function bindGlobalEvents() {
     adjustSessionCount(1);
   });
 
-  document.querySelectorAll("input[name='quiz-mode']").forEach((radio) => {
-    radio.addEventListener("change", () => {
-      persistState();
-      updateSummary();
-    });
-  });
-
   document.querySelectorAll("input[name='class-preset']").forEach((radio) => {
     radio.addEventListener("change", () => {
       switchActivePreset(radio.value);
@@ -221,13 +215,15 @@ function applySettings(settings) {
     100,
     DEFAULT_SETTINGS.questionCount
   );
-  setCheckedValue("quiz-mode", merged.quizMode);
   setSessionCount(merged.sessionCount);
 }
 
 function normalizeSavedState(saved) {
   const defaults = createDefaultPresets();
-  const legacyClasses = Array.isArray(saved.classes) ? sanitizeSavedClasses(saved.classes) : [];
+  const fallbackQuizMode = normalizeQuizMode(saved.settings?.quizMode);
+  const legacyClasses = Array.isArray(saved.classes)
+    ? sanitizeSavedClasses(saved.classes, fallbackQuizMode)
+    : [];
   const presetSource = saved.presets && typeof saved.presets === "object"
     ? saved.presets
     : {};
@@ -235,7 +231,7 @@ function normalizeSavedState(saved) {
   const presets = CLASS_PRESET_CONFIG.reduce((accumulator, preset) => {
     const incomingPreset = presetSource[preset.id] || {};
     const classes = Array.isArray(incomingPreset.classes)
-      ? sanitizeSavedClasses(incomingPreset.classes)
+      ? sanitizeSavedClasses(incomingPreset.classes, fallbackQuizMode)
       : preset.id === CLASS_PRESET_CONFIG[0].id && legacyClasses.length
         ? legacyClasses
         : [];
@@ -260,11 +256,21 @@ function normalizeSavedState(saved) {
   };
 }
 
-function sanitizeSavedClasses(classes) {
+function sanitizeSavedClasses(classes, fallbackQuizMode = DEFAULT_CLASS_QUIZ_MODE) {
   return classes.map((classData) => ({
     className: String(classData?.className || ""),
     rawText: String(classData?.rawText || ""),
+    quizMode: normalizeQuizMode(classData?.quizMode, fallbackQuizMode),
   }));
+}
+
+function normalizeQuizMode(value, fallback = DEFAULT_CLASS_QUIZ_MODE) {
+  const normalizedFallback = ["word-to-meaning", "meaning-to-word"].includes(fallback)
+    ? fallback
+    : DEFAULT_CLASS_QUIZ_MODE;
+  return ["word-to-meaning", "meaning-to-word"].includes(value)
+    ? value
+    : normalizedFallback;
 }
 
 function persistState() {
@@ -287,7 +293,6 @@ function persistState() {
 
 function getSettings() {
   return {
-    quizMode: getCheckedValue("quiz-mode", DEFAULT_SETTINGS.quizMode),
     questionCount: clampNumber(
       Number(elements.questionCountInput.value),
       5,
@@ -318,6 +323,7 @@ function captureActivePresetClassesFromDom() {
   activePreset.classes = collectClassCards().map((card) => ({
     className: card.querySelector(".class-name-input").value,
     rawText: card.querySelector(".paste-area").value,
+    quizMode: getClassCardQuizMode(card),
   }));
 }
 
@@ -488,11 +494,18 @@ function addClassCard(initialData = {}) {
   const textArea = card.querySelector(".paste-area");
   const title = card.querySelector("h4");
   const removeBtn = card.querySelector(".remove-class-btn");
+  const modeInputs = Array.from(card.querySelectorAll(".class-quiz-mode-input"));
+  const modeGroupName = `class-quiz-mode-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   const initialName = initialData.className || "";
+  const initialQuizMode = normalizeQuizMode(initialData.quizMode);
   nameInput.value = initialName;
   textArea.value = initialData.rawText || "";
   title.textContent = initialName || "새 반";
+  modeInputs.forEach((input) => {
+    input.name = modeGroupName;
+    input.checked = input.value === initialQuizMode;
+  });
 
   const syncCard = () => {
     title.textContent = nameInput.value.trim() || "새 반";
@@ -503,6 +516,12 @@ function addClassCard(initialData = {}) {
 
   nameInput.addEventListener("input", syncCard);
   textArea.addEventListener("input", syncCard);
+  modeInputs.forEach((input) => {
+    input.addEventListener("change", () => {
+      persistState();
+      updateSummary();
+    });
+  });
 
   removeBtn.addEventListener("click", () => {
     if (isActivePresetLocked()) {
@@ -821,8 +840,13 @@ function collectClassCards() {
 function collectClassModels() {
   return collectClassCards().map((card) => ({
     className: card.querySelector(".class-name-input").value.trim(),
+    quizMode: getClassCardQuizMode(card),
     parsed: card._parsed || parseVocabulary(card.querySelector(".paste-area").value),
   }));
+}
+
+function getClassCardQuizMode(card) {
+  return normalizeQuizMode(card.querySelector(".class-quiz-mode-input:checked")?.value);
 }
 
 function filterMeaningfulClassModels(classModels) {
@@ -1332,16 +1356,16 @@ async function handleGenerate() {
         setRunStatus("PDF 생성 중...", "running");
         const items = sessionBundles.sessions[index];
 
-        const page = buildSheetPage({
+        const pages = buildSheetPages({
           className: model.className,
           sessionNumber,
           items,
-          quizMode: settings.quizMode,
+          quizMode: model.quizMode,
           dateLabel,
         });
 
-        const pdfBuffer = await renderPageToPdfBuffer(
-          page,
+        const pdfBuffer = await renderPagesToPdfBuffer(
+          pages,
           `입시코드학원 ${model.className} ${sessionNumber}차 단어시험지`
         );
         const fileName = `${safeClassName}_${sessionNumber}차.pdf`;
@@ -1354,16 +1378,16 @@ async function handleGenerate() {
 
         setRunStatus("PDF 생성 중...", "running");
 
-        const answerPage = buildAnswerSheetPage({
+        const answerPages = buildAnswerSheetPages({
           className: model.className,
           sessionNumber,
           items,
-          quizMode: settings.quizMode,
+          quizMode: model.quizMode,
           dateLabel,
         });
 
-        const answerPdfBuffer = await renderPageToPdfBuffer(
-          answerPage,
+        const answerPdfBuffer = await renderPagesToPdfBuffer(
+          answerPages,
           `입시코드학원 ${model.className} ${sessionNumber}차 답지`
         );
         const answerFileName = `${safeClassName}_${sessionNumber}차_답지.pdf`;
@@ -1587,14 +1611,14 @@ function pickBalancedSession(entries, questionCount, usage, signatures) {
   return best.selection;
 }
 
-function buildSheetPage({
+function buildSheetPages({
   className,
   sessionNumber,
   items,
   quizMode,
   dateLabel,
 }) {
-  return buildPrintablePage({
+  return buildPrintablePages({
     className,
     sessionNumber,
     items,
@@ -1604,14 +1628,14 @@ function buildSheetPage({
   });
 }
 
-function buildAnswerSheetPage({
+function buildAnswerSheetPages({
   className,
   sessionNumber,
   items,
   quizMode,
   dateLabel,
 }) {
-  return buildPrintablePage({
+  return buildPrintablePages({
     className,
     sessionNumber,
     items,
@@ -1621,7 +1645,7 @@ function buildAnswerSheetPage({
   });
 }
 
-function buildPrintablePage({
+function buildPrintablePages({
   className,
   sessionNumber,
   items,
@@ -1629,14 +1653,49 @@ function buildPrintablePage({
   dateLabel,
   answerKey,
 }) {
+  const chunks = chunkItems(items, PRINTABLE_ITEMS_PER_PAGE);
+  const pageCount = Math.max(1, chunks.length);
+
+  return chunks.map((pageItems, index) => buildPrintablePage({
+    className,
+    sessionNumber,
+    items: pageItems,
+    quizMode,
+    dateLabel,
+    answerKey,
+    itemStartIndex: index * PRINTABLE_ITEMS_PER_PAGE,
+    totalItemCount: items.length,
+    pageNumber: index + 1,
+    pageCount,
+  }));
+}
+
+function buildPrintablePage({
+  className,
+  sessionNumber,
+  items,
+  quizMode,
+  dateLabel,
+  answerKey,
+  itemStartIndex = 0,
+  totalItemCount = items.length,
+  pageNumber = 1,
+  pageCount = 1,
+}) {
   const columnCount = 4;
   const columns = splitIntoColumns(items, columnCount);
-  let offset = 0;
+  let offset = itemStartIndex;
   const columnMarkup = columns.map((column) => {
     const markup = renderSheetColumn(column, offset, quizMode, { answerKey });
     offset += column.length;
     return markup;
   });
+  const pageBadgeMarkup = pageCount > 1
+    ? `<span class="sheet-badge sheet-page-badge">${pageNumber}/${pageCount}쪽</span>`
+    : "";
+  const itemRangeLabel = pageCount > 1
+    ? `${itemStartIndex + 1}-${itemStartIndex + items.length}/${totalItemCount}문항`
+    : `${items.length}문항`;
   const title = answerKey ? "단어 답지" : "단어 시험지";
   const sideCardMarkup = answerKey
     ? `
@@ -1676,6 +1735,7 @@ function buildPrintablePage({
         <div class="sheet-badge-stack">
           <span class="sheet-badge sheet-class-badge">${escapeHtml(className)}</span>
           <span class="sheet-badge sheet-session-badge">${sessionNumber}차</span>
+          ${pageBadgeMarkup}
         </div>
         ${sideCardMarkup}
       </div>
@@ -1694,7 +1754,7 @@ function buildPrintablePage({
       </div>
       <div class="sheet-info-card">
         <span>문항 수</span>
-        <strong>${items.length}문항</strong>
+        <strong>${escapeHtml(itemRangeLabel)}</strong>
       </div>
       ${metaCardMarkup}
     </section>
@@ -1705,12 +1765,10 @@ function buildPrintablePage({
 
     <footer class="sheet-footer">
       <span>입시코드학원</span>
-      <span>${escapeHtml(className)} · ${sessionNumber}차</span>
+      <span>${escapeHtml(className)} · ${sessionNumber}차${pageCount > 1 ? ` · ${pageNumber}/${pageCount}쪽` : ""}</span>
     </footer>
   `;
 
-  elements.renderStage.innerHTML = "";
-  elements.renderStage.appendChild(page);
   return page;
 }
 
@@ -1767,6 +1825,14 @@ function splitIntoColumns(items, columnCount) {
   }
 
   return columns.filter((column) => column.length);
+}
+
+function chunkItems(items, chunkSize) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize));
+  }
+  return chunks;
 }
 
 async function createGenerationTarget(dateFolderName) {
@@ -1846,17 +1912,14 @@ function arrayBufferToBase64(buffer, mimeType = "application/octet-stream") {
   });
 }
 
-async function renderPageToPdfBuffer(page, documentTitle) {
-  await waitForLayout();
-
-  const canvas = await window.html2canvas(page, {
-    scale: 2,
-    backgroundColor: "#f5f2eb",
-    logging: false,
-    useCORS: true,
+async function renderPagesToPdfBuffer(pages, documentTitle) {
+  elements.renderStage.innerHTML = "";
+  pages.forEach((page) => {
+    elements.renderStage.appendChild(page);
   });
 
-  const imageData = canvas.toDataURL("image/jpeg", 0.96);
+  await waitForLayout();
+
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF({
     orientation: "portrait",
@@ -1869,11 +1932,25 @@ async function renderPageToPdfBuffer(page, documentTitle) {
     pdf.setProperties({ title: documentTitle });
   }
 
-  pdf.addImage(imageData, "JPEG", 0, 0, 210, 297, undefined, "FAST");
-  const buffer = pdf.output("arraybuffer");
+  for (let index = 0; index < pages.length; index += 1) {
+    const canvas = await window.html2canvas(pages[index], {
+      scale: 2,
+      backgroundColor: "#f5f2eb",
+      logging: false,
+      useCORS: true,
+    });
+    const imageData = canvas.toDataURL("image/jpeg", 0.96);
 
-  canvas.width = 0;
-  canvas.height = 0;
+    if (index > 0) {
+      pdf.addPage("a4", "portrait");
+    }
+
+    pdf.addImage(imageData, "JPEG", 0, 0, 210, 297, undefined, "FAST");
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+
+  const buffer = pdf.output("arraybuffer");
 
   return buffer;
 }
@@ -2093,6 +2170,7 @@ function seedDemoData() {
   const demoClasses = [
     {
       className: "2강서A",
+      quizMode: "word-to-meaning",
       rawText: [
         "abandon\t버리다",
         "ability\t능력",
@@ -2108,6 +2186,7 @@ function seedDemoData() {
     },
     {
       className: "1강서B",
+      quizMode: "meaning-to-word",
       rawText: [
         "ancient\t고대의",
         "brilliant\t훌륭한",
@@ -2129,7 +2208,6 @@ function seedDemoData() {
   renderActivePreset();
   syncPresetUi();
   applySettings({
-    quizMode: "word-to-meaning",
     questionCount: 10,
     sessionCount: 2,
   });
