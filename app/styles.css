@@ -627,8 +627,8 @@ button{
 
 .class-form-grid{
   display:grid;
-  grid-template-columns:minmax(220px, 320px) minmax(190px, 240px) minmax(0,1fr);
-  gap:14px;
+  grid-template-columns:minmax(150px, 220px) minmax(170px, 220px) minmax(320px,1fr);
+  gap:12px;
   align-items:end;
   margin-bottom:18px;
 }
@@ -644,15 +644,18 @@ button{
 
 .stat-chip-group{
   display:flex;
-  flex-wrap:wrap;
-  gap:12px;
+  flex-wrap:nowrap;
+  gap:8px;
   align-items:center;
+  justify-content:flex-end;
   align-self:end;
+  min-width:0;
 }
 
 .class-form-grid .stat-chip{
   min-height:52px;
-  padding:12px 16px;
+  padding:10px 12px;
+  font-size:.78rem;
   white-space:nowrap;
 }
 
@@ -1155,6 +1158,11 @@ button{
   .class-editor-grid,
   .preset-grid{
     grid-template-columns:1fr;
+  }
+
+  .stat-chip-group{
+    justify-content:flex-start;
+    flex-wrap:wrap;
   }
 
   .preset-tools{
