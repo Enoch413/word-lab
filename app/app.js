@@ -55,6 +55,7 @@ function createDefaultPresets() {
   return CLASS_PRESET_CONFIG.reduce((accumulator, preset) => {
     accumulator[preset.id] = {
       classes: [],
+      teacherName: "",
       layoutLocked: false,
     };
     return accumulator;
@@ -696,6 +697,7 @@ function cacheElements() {
   elements.sessionCountDisplay = document.getElementById("session-count-display");
   elements.sessionCountDecreaseBtn = document.getElementById("session-count-decrease");
   elements.sessionCountIncreaseBtn = document.getElementById("session-count-increase");
+  elements.teacherNameInput = document.getElementById("teacher-name");
   elements.saveRootStatus = document.getElementById("save-root-status");
   elements.metricClassCount = document.getElementById("metric-class-count");
   elements.metricWordCount = document.getElementById("metric-word-count");
@@ -726,6 +728,11 @@ function bindGlobalEvents() {
   elements.snapshotFileInput.addEventListener("change", handleSnapshotImport);
   elements.pickFolderBtn.addEventListener("click", handlePickFolderClick);
   elements.generateBtn.addEventListener("click", handleGenerate);
+
+  elements.teacherNameInput.addEventListener("input", () => {
+    getActivePresetState().teacherName = elements.teacherNameInput.value;
+    persistState();
+  });
 
   elements.questionCountInput.addEventListener("input", () => {
     persistState();
@@ -804,6 +811,7 @@ function normalizeSavedState(saved) {
 
     accumulator[preset.id] = {
       classes: classes.length ? classes : defaults[preset.id].classes,
+      teacherName: String(incomingPreset.teacherName || ""),
       layoutLocked: typeof incomingPreset.layoutLocked === "boolean"
         ? incomingPreset.layoutLocked
         : classes.length > 0,
@@ -849,6 +857,7 @@ function persistState() {
       const presetState = state.presets[preset.id] || { classes: [], layoutLocked: false };
       accumulator[preset.id] = {
         classes: sanitizeSavedClasses(presetState.classes || []),
+        teacherName: String(presetState.teacherName || ""),
         layoutLocked: Boolean(presetState.layoutLocked),
       };
       return accumulator;
@@ -887,6 +896,7 @@ function captureActivePresetClassesFromDom() {
   }
 
   const activePreset = getActivePresetState();
+  activePreset.teacherName = elements.teacherNameInput?.value || "";
   activePreset.classes = collectClassCards().map((card) => ({
     classId: String(card.dataset.classId || ""),
     className: card.querySelector(".class-name-input").value,
@@ -909,6 +919,7 @@ function buildSnapshotPayload(dateFolderName = "") {
       const presetState = state.presets[preset.id] || { classes: [], layoutLocked: false };
       accumulator[preset.id] = {
         label: preset.label,
+        teacherName: String(presetState.teacherName || ""),
         layoutLocked: Boolean(presetState.layoutLocked),
         classes: sanitizeSavedClasses(presetState.classes || []),
       };
@@ -934,6 +945,7 @@ function normalizeSnapshotImport(snapshot) {
       const importedPreset = snapshot.presets?.[preset.id] || {};
       accumulator[preset.id] = {
         classes: sanitizeSavedClasses(normalized.presets[preset.id].classes || []),
+        teacherName: String(normalized.presets[preset.id].teacherName || ""),
         layoutLocked: typeof importedPreset.layoutLocked === "boolean"
           ? importedPreset.layoutLocked
           : normalized.presets[preset.id].layoutLocked,
@@ -947,6 +959,7 @@ function normalizeSnapshotImport(snapshot) {
 function renderActivePreset() {
   const activePreset = getActivePresetState();
   elements.classList.innerHTML = "";
+  elements.teacherNameInput.value = activePreset.teacherName || "";
 
   const classesToRender = activePreset.classes.length
     ? activePreset.classes
@@ -1022,7 +1035,7 @@ function toggleActivePresetLock() {
   showToast(
     shouldLock
       ? "반 구성 잠금이 켜졌습니다. 이제 단어만 수정하면 됩니다."
-      : "반 구성 편집이 열렸습니다. 반 이름과 개수를 바꿀 수 있습니다."
+      : "반 구성 편집이 열렸습니다. 반 이름, 담당 선생님과 개수를 바꿀 수 있습니다."
   );
 }
 
@@ -1040,6 +1053,9 @@ function syncPresetUi() {
     elements.toggleLayoutLockBtn.textContent = "반 구성 잠금";
     elements.addClassBtn.disabled = false;
   }
+
+  elements.teacherNameInput.readOnly = activePreset.layoutLocked;
+  elements.teacherNameInput.classList.toggle("is-readonly", activePreset.layoutLocked);
 }
 
 function applyLayoutLockToCards() {
@@ -1897,13 +1913,17 @@ async function handleGenerate() {
   setGenerating(true);
   const now = new Date();
   const dateFolderName = formatDateFolder(now);
+  const outputFolderName = formatOutputFolderName(
+    getActivePresetState().teacherName,
+    dateFolderName
+  );
   const dateLabel = formatDisplayDate(now);
   const warnings = validationMessages
     .filter((message) => message.type === "warning")
     .map((message) => message.text);
 
   try {
-    const generationTarget = await createGenerationTarget(dateFolderName);
+    const generationTarget = await createGenerationTarget(outputFolderName);
     let completedFiles = 0;
     const totalFiles = printableClassModels.length * settings.sessionCount * 2;
     let zipSaved = false;
@@ -1942,7 +1962,7 @@ async function handleGenerate() {
         const fileName = `${safeClassName}_${sessionNumber}차.pdf`;
         await writeGeneratedPdfFile(generationTarget, safeClassName, fileName, pdfBuffer);
         zipEntries.push({
-          path: `${dateFolderName}/${safeClassName}/${fileName}`,
+          path: `${outputFolderName}/${safeClassName}/${fileName}`,
           data: pdfBuffer,
         });
         completedFiles += 1;
@@ -1969,7 +1989,7 @@ async function handleGenerate() {
           answerPdfBuffer
         );
         zipEntries.push({
-          path: `${dateFolderName}/${safeClassName}/${answerFileName}`,
+          path: `${outputFolderName}/${safeClassName}/${answerFileName}`,
           data: answerPdfBuffer,
         });
         completedFiles += 1;
@@ -1977,11 +1997,11 @@ async function handleGenerate() {
     }
 
     try {
-      const snapshotPayload = buildSnapshotPayload(dateFolderName);
+      const snapshotPayload = buildSnapshotPayload(outputFolderName);
       const snapshotText = JSON.stringify(snapshotPayload, null, 2);
       await writeGeneratedTextFile(generationTarget, SNAPSHOT_FILE_NAME, snapshotText);
       zipEntries.push({
-        path: `${dateFolderName}/${SNAPSHOT_FILE_NAME}`,
+        path: `${outputFolderName}/${SNAPSHOT_FILE_NAME}`,
         data: snapshotText,
       });
     } catch (snapshotError) {
@@ -1991,7 +2011,7 @@ async function handleGenerate() {
 
     try {
       const zipBuffer = createZipArchive(zipEntries);
-      await writeGeneratedZipFile(generationTarget, `${dateFolderName}.zip`, zipBuffer);
+      await writeGeneratedZipFile(generationTarget, `${outputFolderName}.zip`, zipBuffer);
       zipSaved = true;
     } catch (zipError) {
       console.error(zipError);
@@ -2774,6 +2794,7 @@ function seedDemoData() {
   ];
 
   const activePreset = getActivePresetState();
+  activePreset.teacherName = "홍길동";
   activePreset.classes = demoClasses;
   activePreset.layoutLocked = false;
   renderActivePreset();
@@ -2931,6 +2952,15 @@ function formatDateFolder(date) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function formatOutputFolderName(teacherName, dateFolderName) {
+  const normalizedTeacherName = String(teacherName || "").trim();
+  if (!normalizedTeacherName) {
+    return dateFolderName;
+  }
+
+  return `${sanitizeFilePart(normalizedTeacherName)}_${dateFolderName}`;
 }
 
 function formatDisplayDate(date) {
