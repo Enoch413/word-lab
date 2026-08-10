@@ -73,6 +73,22 @@
               <input class="text-input" id="teacher-name" type="text" placeholder="예: 홍길동">
             </label>
 
+            <div class="field-block">
+              <label class="field-title" for="output-date">자료 날짜</label>
+              <input class="text-input" id="output-date" type="date">
+              <div class="date-quick-actions" aria-label="빠른 자료 날짜 선택">
+                <button class="date-quick-btn" type="button" data-date-offset="0">오늘</button>
+                <button class="date-quick-btn" type="button" data-date-offset="1">+1일</button>
+                <button class="date-quick-btn" type="button" data-date-offset="2">+2일</button>
+              </div>
+            </div>
+
+            <div class="output-folder-preview" aria-live="polite">
+              <span class="field-title">생성 폴더 / ZIP</span>
+              <strong id="output-folder-preview">날짜를 선택해 주세요.</strong>
+              <small id="output-folder-preview-note">같은 이름이 있으면 _2, _3이 자동으로 붙습니다.</small>
+            </div>
+
             <div class="preset-tools">
               <button class="btn btn-ghost" type="button" id="toggle-layout-lock-btn">반 구성 편집</button>
               <button class="btn btn-ghost" type="button" id="import-snapshot-btn">파일 복원</button>

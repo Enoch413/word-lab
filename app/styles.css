@@ -259,6 +259,63 @@ button{
   min-width:0;
 }
 
+.date-quick-actions{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:8px;
+}
+
+.date-quick-btn{
+  min-height:38px;
+  padding:8px 10px;
+  border:1.5px solid rgba(23,79,89,.14);
+  border-radius:12px;
+  background:rgba(255,255,255,.94);
+  color:var(--ink-soft);
+  font-size:.8rem;
+  font-weight:800;
+  cursor:pointer;
+  transition:border-color .18s ease, background .18s ease, color .18s ease;
+}
+
+.date-quick-btn:hover:not(:disabled),
+.date-quick-btn:focus-visible{
+  border-color:rgba(23,79,89,.3);
+  background:rgba(23,79,89,.06);
+  color:var(--blue);
+  outline:none;
+}
+
+.date-quick-btn:disabled{
+  opacity:.45;
+  cursor:not-allowed;
+}
+
+.output-folder-preview{
+  min-width:0;
+  padding:14px 16px;
+  border:1px dashed rgba(23,79,89,.2);
+  border-radius:16px;
+  background:rgba(23,79,89,.04);
+}
+
+.output-folder-preview strong{
+  display:block;
+  margin-top:8px;
+  color:var(--blue);
+  font-size:.92rem;
+  line-height:1.45;
+  overflow-wrap:anywhere;
+}
+
+.output-folder-preview small{
+  display:block;
+  margin-top:6px;
+  color:var(--muted);
+  font-size:.72rem;
+  line-height:1.5;
+}
+
 .control-card,
 .class-section,
 .action-card{

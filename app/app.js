@@ -33,6 +33,7 @@ const state = {
   saveRootName: "",
   toastTimer: null,
   isGenerating: false,
+  outputPreviewRequestId: 0,
   currentUser: null,
   userProfile: null,
 };
@@ -668,6 +669,7 @@ function setStoredStateRaw(value) {
 
 async function initializeApp() {
   cacheElements();
+  initializeOutputDateControl();
   bindGlobalEvents();
   initializeNativeBridge();
   await initializeCurrentUserContext();
@@ -678,6 +680,7 @@ async function initializeApp() {
   syncPresetUi();
   syncSaveRootUi();
   await restoreSaveRootHandle();
+  await updateOutputFolderPreview();
   updateSummary();
   setRunStatus("아직 생성 전입니다.", "success");
 }
@@ -698,6 +701,10 @@ function cacheElements() {
   elements.sessionCountDecreaseBtn = document.getElementById("session-count-decrease");
   elements.sessionCountIncreaseBtn = document.getElementById("session-count-increase");
   elements.teacherNameInput = document.getElementById("teacher-name");
+  elements.outputDateInput = document.getElementById("output-date");
+  elements.outputDateQuickButtons = Array.from(document.querySelectorAll("[data-date-offset]"));
+  elements.outputFolderPreview = document.getElementById("output-folder-preview");
+  elements.outputFolderPreviewNote = document.getElementById("output-folder-preview-note");
   elements.saveRootStatus = document.getElementById("save-root-status");
   elements.metricClassCount = document.getElementById("metric-class-count");
   elements.metricWordCount = document.getElementById("metric-word-count");
@@ -732,6 +739,17 @@ function bindGlobalEvents() {
   elements.teacherNameInput.addEventListener("input", () => {
     getActivePresetState().teacherName = elements.teacherNameInput.value;
     persistState();
+    void updateOutputFolderPreview();
+  });
+
+  elements.outputDateInput.addEventListener("input", () => {
+    void updateOutputFolderPreview();
+  });
+
+  elements.outputDateQuickButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      setOutputDateOffset(Number(button.dataset.dateOffset || 0));
+    });
   });
 
   elements.questionCountInput.addEventListener("input", () => {
@@ -752,6 +770,87 @@ function bindGlobalEvents() {
       switchActivePreset(radio.value);
     });
   });
+}
+
+function initializeOutputDateControl() {
+  elements.outputDateInput.value = formatDateFolder(new Date());
+}
+
+function setOutputDateOffset(dayOffset) {
+  const date = new Date();
+  date.setHours(12, 0, 0, 0);
+  date.setDate(date.getDate() + Number(dayOffset || 0));
+  elements.outputDateInput.value = formatDateFolder(date);
+  void updateOutputFolderPreview();
+}
+
+function getSelectedOutputDateFolderName() {
+  const value = String(elements.outputDateInput?.value || "").trim();
+  if (isValidDateFolderName(value)) {
+    return value;
+  }
+
+  const fallback = formatDateFolder(new Date());
+  if (elements.outputDateInput) {
+    elements.outputDateInput.value = fallback;
+  }
+  return fallback;
+}
+
+function isValidDateFolderName(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
+  if (!match) {
+    return false;
+  }
+
+  const [, yearText, monthText, dayText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const date = new Date(year, month - 1, day);
+  return date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day;
+}
+
+function getBaseOutputFolderName() {
+  return formatOutputFolderName(
+    getActivePresetState().teacherName,
+    getSelectedOutputDateFolderName()
+  );
+}
+
+async function updateOutputFolderPreview() {
+  if (!elements.outputFolderPreview || !elements.outputFolderPreviewNote) {
+    return;
+  }
+
+  const requestId = state.outputPreviewRequestId + 1;
+  state.outputPreviewRequestId = requestId;
+  const baseFolderName = getBaseOutputFolderName();
+  elements.outputFolderPreview.textContent = baseFolderName;
+  elements.outputFolderPreview.title = baseFolderName;
+  elements.outputFolderPreviewNote.textContent =
+    `ZIP: ${baseFolderName}.zip · 같은 이름이 있으면 _2, _3이 자동으로 붙습니다.`;
+
+  if (hasNativeHost() || !state.saveRootHandle) {
+    return;
+  }
+
+  try {
+    const availableFolderName = await resolveAvailableOutputFolderName(baseFolderName);
+    if (requestId !== state.outputPreviewRequestId) {
+      return;
+    }
+
+    elements.outputFolderPreview.textContent = availableFolderName;
+    elements.outputFolderPreview.title = availableFolderName;
+    elements.outputFolderPreviewNote.textContent = availableFolderName === baseFolderName
+      ? `ZIP: ${availableFolderName}.zip · 같은 이름이 생기면 자동으로 다음 번호를 사용합니다.`
+      : `같은 이름이 있어 ${availableFolderName} 폴더와 ${availableFolderName}.zip으로 저장됩니다.`;
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 function restoreState() {
@@ -960,6 +1059,7 @@ function renderActivePreset() {
   const activePreset = getActivePresetState();
   elements.classList.innerHTML = "";
   elements.teacherNameInput.value = activePreset.teacherName || "";
+  void updateOutputFolderPreview();
 
   const classesToRender = activePreset.classes.length
     ? activePreset.classes
@@ -1755,6 +1855,8 @@ function syncSaveRootUi() {
     return;
   }
 
+  void updateOutputFolderPreview();
+
   const disconnectedLabel = "\uBBF8\uC5F0\uACB0";
   const folderLabel = state.saveRootName || disconnectedLabel;
   const compactFolderLabel = state.saveRootName
@@ -1912,17 +2014,16 @@ async function handleGenerate() {
 
   setGenerating(true);
   const now = new Date();
-  const dateFolderName = formatDateFolder(now);
-  const outputFolderName = formatOutputFolderName(
-    getActivePresetState().teacherName,
-    dateFolderName
-  );
+  const requestedOutputFolderName = getBaseOutputFolderName();
   const dateLabel = formatDisplayDate(now);
   const warnings = validationMessages
     .filter((message) => message.type === "warning")
     .map((message) => message.text);
 
   try {
+    const outputFolderName = await resolveAvailableOutputFolderName(
+      requestedOutputFolderName
+    );
     const generationTarget = await createGenerationTarget(outputFolderName);
     let completedFiles = 0;
     const totalFiles = printableClassModels.length * settings.sessionCount * 2;
@@ -2018,11 +2119,11 @@ async function handleGenerate() {
       warnings.push(`ZIP 저장 실패: ${formatErrorDetail(zipError)}`);
     }
 
-    setRunStatus("PDF 생성 완료", "success");
+    setRunStatus(`PDF 생성 완료 · ${outputFolderName}`, "success");
     showToast(
       zipSaved
-        ? `PDF ${totalFiles}개와 ZIP 1개 생성이 끝났습니다.`
-        : `PDF ${totalFiles}개 생성이 끝났습니다. ZIP 생성은 실패했습니다.`
+        ? `${outputFolderName}: PDF ${totalFiles}개와 ZIP 1개 생성이 끝났습니다.`
+        : `${outputFolderName}: PDF ${totalFiles}개 생성이 끝났습니다. ZIP 생성은 실패했습니다.`
     );
   } catch (error) {
     console.error(error);
@@ -2040,6 +2141,7 @@ async function handleGenerate() {
   } finally {
     elements.renderStage.innerHTML = "";
     setGenerating(false);
+    await updateOutputFolderPreview();
   }
 }
 
@@ -2442,6 +2544,48 @@ async function createGenerationTarget(dateFolderName) {
   };
 }
 
+async function resolveAvailableOutputFolderName(baseFolderName) {
+  if (hasNativeHost() || !state.saveRootHandle) {
+    return baseFolderName;
+  }
+
+  for (let suffix = 1; suffix < 10000; suffix += 1) {
+    const candidate = suffix === 1 ? baseFolderName : `${baseFolderName}_${suffix}`;
+    if (!(await outputTargetExists(state.saveRootHandle, candidate))) {
+      return candidate;
+    }
+  }
+
+  throw new Error("사용 가능한 출력 폴더 이름을 찾지 못했습니다.");
+}
+
+async function outputTargetExists(rootHandle, folderName) {
+  if (await fileSystemEntryExists(rootHandle, folderName, "directory")) {
+    return true;
+  }
+
+  return fileSystemEntryExists(rootHandle, `${folderName}.zip`, "file");
+}
+
+async function fileSystemEntryExists(parentHandle, entryName, kind) {
+  try {
+    if (kind === "directory") {
+      await parentHandle.getDirectoryHandle(entryName, { create: false });
+    } else {
+      await parentHandle.getFileHandle(entryName, { create: false });
+    }
+    return true;
+  } catch (error) {
+    if (error?.name === "NotFoundError") {
+      return false;
+    }
+    if (error?.name === "TypeMismatchError") {
+      return true;
+    }
+    throw error;
+  }
+}
+
 async function writeGeneratedPdfFile(target, classFolderName, fileName, pdfBuffer) {
   if (target.mode === "native") {
     const base64Data = await arrayBufferToBase64(pdfBuffer);
@@ -2741,8 +2885,12 @@ function setGenerating(isGenerating) {
   state.isGenerating = isGenerating;
   elements.generateBtn.disabled = isGenerating;
   elements.pickFolderBtn.disabled = isGenerating;
-  elements.addClassBtn.disabled = isGenerating;
+  elements.addClassBtn.disabled = isGenerating || isActivePresetLocked();
   elements.seedDemoBtn.disabled = isGenerating;
+  elements.outputDateInput.disabled = isGenerating;
+  elements.outputDateQuickButtons.forEach((button) => {
+    button.disabled = isGenerating;
+  });
 }
 
 function setRunStatus(message, type) {
