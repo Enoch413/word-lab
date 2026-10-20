@@ -42,7 +42,7 @@ test('F07 height-based pagination preserves all entries, order, numbering and pa
   const {run}=app();
   run(`
     elements.renderStage={innerHTML:'',appendChild:()=>{}};
-    buildPrintablePage=options=>({_printOptions:options,remove(){},getBoundingClientRect(){return {height:Math.max(1123,300+Math.ceil(options.items.length/4)*options.items[0].height)}}});
+    buildPrintablePage=options=>({_printOptions:options,classList:{add(){}},querySelectorAll:()=>[],remove(){},getBoundingClientRect(){return {height:Math.max(1123,300+Math.ceil(options.items.length/4)*options.items[0].height)}}});
     globalThis.items=Array.from({length:100},(_,index)=>({word:String(index),height:220}));
     globalThis.input=[buildPrintablePage({items:items.slice(0,50),itemStartIndex:0,totalItemCount:100,className:'검사반'}),buildPrintablePage({items:items.slice(50),itemStartIndex:50,totalItemCount:100,className:'검사반'})];
   `);
@@ -62,7 +62,7 @@ test('F07 height-based pagination preserves all entries, order, numbering and pa
 
 test('F07 an oversized single item fails explicitly instead of shrinking or clipping text',()=>{
   const {run}=app();
-  run(`elements.renderStage={innerHTML:'',appendChild:()=>{}};buildPrintablePage=options=>({_printOptions:options,remove(){},getBoundingClientRect:()=>({height:3000})});`);
+  run(`elements.renderStage={innerHTML:'',appendChild:()=>{}};buildPrintablePage=options=>({_printOptions:options,classList:{add(){}},querySelectorAll:()=>[],remove(){},getBoundingClientRect:()=>({height:3000})});`);
   assert.throws(()=>run(`paginatePrintablePages([buildPrintablePage({items:[{word:'huge'}],itemStartIndex:0,totalItemCount:1})])`),/한 문항|인쇄 영역/);
 });
 

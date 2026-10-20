@@ -1260,6 +1260,93 @@ button{
   letter-spacing:.04em;
 }
 
+/* Keep paired 50-item sheets on A4 without reducing the type size. */
+.sheet-page-compact{
+  padding:28px 30px 24px;
+}
+
+.sheet-page-compact .sheet-header{
+  padding-bottom:10px;
+}
+
+.sheet-page-compact .sheet-badge{
+  min-height:28px;
+  padding:4px 10px;
+}
+
+.sheet-page-compact .sheet-badge-stack{
+  gap:6px;
+}
+
+.sheet-page-compact .sheet-info{
+  margin-top:10px;
+}
+
+.sheet-page-compact .sheet-info-card{
+  min-height:50px;
+  padding:7px 10px;
+}
+
+.sheet-page-compact .sheet-info-card strong{
+  margin-top:4px;
+}
+
+.sheet-page-compact .sheet-grid{
+  margin-top:12px;
+}
+
+.sheet-page-compact .sheet-column{
+  gap:3px;
+}
+
+.sheet-page-compact .sheet-row{
+  min-height:50px;
+  padding:4px 6px;
+}
+
+.sheet-page-compact .sheet-answer-text,
+.sheet-page-compact .sheet-answer-line{
+  margin-top:4px;
+}
+
+.sheet-page-compact .sheet-footer{
+  margin-top:10px;
+}
+
+.sheet-page-filled{
+  display:flex;
+  flex-direction:column;
+}
+
+.sheet-page-filled .sheet-header,
+.sheet-page-filled .sheet-info,
+.sheet-page-filled .sheet-footer{
+  flex-shrink:0;
+}
+
+.sheet-page-filled .sheet-grid{
+  flex:1;
+  align-items:stretch;
+}
+
+.sheet-page-filled .sheet-column,
+.sheet-page-filled .sheet-row{
+  display:flex;
+  flex-direction:column;
+}
+
+.sheet-page-filled .sheet-column{
+  align-items:stretch;
+}
+
+.sheet-page-filled .sheet-row{
+  flex:1;
+}
+
+.sheet-page-filled .sheet-answer-line{
+  margin-top:auto;
+}
+
 @container (max-width:780px){
   .class-form-grid{
     grid-template-columns:repeat(2,minmax(0,1fr));

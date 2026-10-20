@@ -67,12 +67,14 @@ Windows PowerShell과 Edge 또는 Chrome으로 실행하는 정적 웹앱입니�
 저장소 루트에서 실행합니다.
 
 ```text
-node --test tests/regressions.test.cjs tests/p2.test.cjs tests/p3.test.cjs tests/final-fixes.test.cjs tests/server.test.cjs
+node --test tests/regressions.test.cjs tests/p2.test.cjs tests/p3.test.cjs tests/final-fixes.test.cjs tests/server.test.cjs tests/print-layout.test.cjs
 ```
 
 합성 데이터·가상 핸들과 격리 포트의 임시 서버를 사용합니다. 사용자 저장 폴더나 Firebase에 쓰지 않습니다. Node.js는 개발 검사에만 사용합니다.
 
-PDF 브라우저 재현 화면은 `node tests/build-browser-fixture.cjs <새 절대 경로>`로 만듭니다. 이 임시 폴더를 서버의 `-Root`로 지정하고 별도 포트에서 `/app/index.html`을 열어 검사합니다. 실제 출력 함수·CSS·vendor로 일반/긴 뜻과 50/100문항을 생성하고 문항 번호·높이를 검사합니다.
+PDF 브라우저 재현 화면은 `node tests/build-browser-fixture.cjs <새 절대 경로>`로 만듭니다. 이 임시 폴더를 서버의 `-Root`로 지정하고 별도 포트에서 `/app/index.html`을 열어 검사합니다. 실제 출력 함수·CSS·vendor로 일반/긴 뜻과 50/100문항을 생성하고 시험지·답지의 문항 번호·페이지·행 위치·높이를 대조합니다.
+
+시험지와 답지는 같은 페이지·열·행 높이를 사용합니다. 50문항 이하는 A4 한 쪽에 출력하며, 필요하면 글자 크기를 유지하고 헤더·행 간격만 줄입니다. 50문항 페이지는 각 열의 박스 높이에 남는 공간을 나눠 하단까지 채웁니다. 매우 긴 설명으로 한 쪽을 넘으면 내용을 자르거나 글자를 축소하지 않고 오류를 표시합니다. 해당 뜻을 줄이거나 문항 수를 줄여 다시 생성하세요. 50문항을 초과할 때도 시험지·답지의 페이지 구분은 같습니다.
 
 vendor 버전·공식 출처·파일 해시는 `vendor/manifest.json`에 기록합니다. 배포는 자동 수행하지 않습니다.
 

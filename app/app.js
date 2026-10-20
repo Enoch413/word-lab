@@ -2880,17 +2880,46 @@ function buildPrintablePage({
   return page;
 }
 
+function buildMatchingPrintablePage(options) {
+  let selectedPage;
+  for (const compact of [false, true]) {
+    const pair = [false, true].map((answerKey) => buildPrintablePage({ ...options, answerKey }));
+    pair.forEach((page) => {
+      if (compact) page.classList.add("sheet-page-compact");
+      elements.renderStage.appendChild(page);
+    });
+    // Measure both versions so every question keeps the same position on its key.
+    for (const selector of [".sheet-header, .sheet-info", ".sheet-row"]) {
+      const left = pair[0].querySelectorAll(selector);
+      const right = pair[1].querySelectorAll(selector);
+      left.forEach((node, index) => {
+        const height = Math.max(node.getBoundingClientRect().height, right[index].getBoundingClientRect().height);
+        node.style.minHeight = right[index].style.minHeight = `${height}px`;
+      });
+    }
+    const fits = pair.every((page) => page.getBoundingClientRect().height <= 1123);
+    if (fits && options.items.length === PRINTABLE_ITEMS_PER_PAGE) {
+      pair.forEach((page) => page.classList.add("sheet-page-filled"));
+    }
+    selectedPage = pair[options.answerKey ? 1 : 0];
+    pair.forEach((page) => page.remove());
+    if (fits) break;
+  }
+  return selectedPage;
+}
+
 function paginatePrintablePages(pages) {
   const output = [];
   elements.renderStage.innerHTML = "";
   if (!pages.length) return [];
   const options = { ...pages[0]._printOptions, items: pages.flatMap((page) => page._printOptions.items) };
   if (options.items.length <= PRINTABLE_ITEMS_PER_PAGE) {
-    const singlePage = buildPrintablePage({ ...options, pageNumber: 1, pageCount: 1 });
+    const singlePage = buildMatchingPrintablePage({ ...options, pageNumber: 1, pageCount: 1 });
     elements.renderStage.appendChild(singlePage);
     const fits = singlePage.getBoundingClientRect().height <= 1123;
     singlePage.remove();
     if (fits) return [singlePage];
+    throw new Error(`${options.className}: ${options.items.length}문항의 단어·뜻이 길어 한 페이지에 들어가지 않습니다. 한 문항의 긴 설명을 줄이거나 문항 수를 줄여 주세요. 글자를 축소하거나 내용을 자르지 않았습니다.`);
   }
   let offset = 0;
   while (offset < options.items.length) {
@@ -2899,7 +2928,7 @@ function paginatePrintablePages(pages) {
     let fittingCount = 0;
     while (low <= high) {
       const count = Math.floor((low + high) / 2);
-      const candidate = buildPrintablePage({ ...options, items: options.items.slice(offset, offset + count), itemStartIndex: options.itemStartIndex + offset, pageCount: options.totalItemCount });
+      const candidate = buildMatchingPrintablePage({ ...options, items: options.items.slice(offset, offset + count), itemStartIndex: options.itemStartIndex + offset, pageCount: options.totalItemCount });
       elements.renderStage.appendChild(candidate);
       const fits = candidate.getBoundingClientRect().height <= 1123;
       candidate.remove();
@@ -2916,7 +2945,7 @@ function paginatePrintablePages(pages) {
     output.push({ ...options, items: options.items.slice(offset, offset + fittingCount), itemStartIndex: options.itemStartIndex + offset });
     offset += fittingCount;
   }
-  return output.map((options, index) => buildPrintablePage({ ...options, pageNumber: index + 1, pageCount: output.length }));
+  return output.map((options, index) => buildMatchingPrintablePage({ ...options, pageNumber: index + 1, pageCount: output.length }));
 }
 
 function renderSheetColumn(entries, baseIndex, quizMode, options = {}) {
