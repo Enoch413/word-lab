@@ -1,4 +1,5 @@
 const STORAGE_KEY = "word-lab-desktop-state-v1";
+const INPUT_SCOPE_KEY = `${STORAGE_KEY}:scope`;
 const HANDLE_DB_NAME = "word-lab-directory-handles";
 const HANDLE_STORE_NAME = "handles";
 const SAVE_ROOT_HANDLE_KEY = "save-root";
@@ -8,6 +9,7 @@ const LAB_STORAGE_NAME = "WORD LAB";
 const ADMIN_STATE_STORAGE_KEY_PREFIX = `${STORAGE_KEY}:${LAB_STORAGE_NAME}:admin`;
 const LAST_USED_CLASS_KEY_PREFIX = `${LAB_STORAGE_NAME}:last-class`;
 const FIREBASE_SDK_VERSION = "10.12.2";
+const AUTH_CONTEXT_TIMEOUT_MS = 3000;
 const FIREBASE_CONFIG_GLOBAL_KEYS = [
   "__WORD_LAB_FIREBASE_CONFIG__",
   "__CODELAB_FIREBASE_CONFIG__",
@@ -31,8 +33,21 @@ const state = {
   saveRootHandle: null,
   rememberedSaveRootHandle: null,
   saveRootName: "",
+  saveRootRevision: 0,
   toastTimer: null,
   isGenerating: false,
+  generationControls: new Map(),
+  hasUnsavedChanges: false,
+  undoSnapshot: null,
+  undoStorageKey: null,
+  localRevision: 0,
+  activeStorageKey: null,
+  inputEditable: false,
+  inputLockRequest: null,
+  releaseInputLock: null,
+  inputReadOnlyControls: new Map(),
+  inputConflict: false,
+  availableUserContext: null,
   outputPreviewRequestId: 0,
   currentUser: null,
   userProfile: null,
@@ -136,9 +151,119 @@ function applyAuthenticatedAdminDefaults() {
 }
 
 async function initializeCurrentUserContext() {
-  const authContext = await loadCurrentUserProfile();
-  state.currentUser = authContext?.user || null;
-  state.userProfile = authContext?.profile || null;
+  return loadCurrentUserProfile();
+}
+
+async function initializeOptionalUserContext() {
+  const revision = state.localRevision;
+  let timer;
+  let context = null;
+  try {
+    context = await Promise.race([
+      initializeCurrentUserContext(),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), AUTH_CONTEXT_TIMEOUT_MS); }),
+    ]);
+  } catch (error) {
+    console.error(error);
+  } finally {
+    clearTimeout(timer);
+  }
+  elements.authStatus.hidden = false;
+  state.availableUserContext = context;
+  if (!context?.user) {
+    elements.authStatus.textContent = "로컬 모드 · 입력은 현재 브라우저에 저장됩니다.";
+    syncInputScopeUi();
+    return;
+  }
+  if (state.inputConflict || state.hasUnsavedChanges) {
+    elements.authStatus.textContent = "보호 중인 현재 입력을 유지했습니다. 입력 백업을 저장한 뒤 충돌·자동 저장 안내를 확인해 주세요.";
+    syncInputScopeUi();
+    return;
+  }
+  const selection = getInputScopeSelection();
+  if (state.localRevision !== revision || state.isGenerating || selection?.mode === "local" ||
+      (selection?.mode === "admin" && selection.uid !== context.user.uid)) {
+    elements.authStatus.textContent = "현재 로컬 입력을 유지했습니다. 로그인 저장 입력은 버튼으로 선택할 수 있으며 원래 입력은 보관됩니다.";
+    syncInputScopeUi();
+    return;
+  }
+  state.currentUser = context.user;
+  state.userProfile = context.profile || null;
+  state.activeStorageKey = getStateStorageKey(context.user, state.userProfile);
+  restoreState();
+  applyAuthenticatedAdminDefaults();
+  renderActivePreset();
+  syncPresetUi();
+  updateSummary();
+  elements.authStatus.textContent = "로그인 기본 설정을 적용했습니다. 계정을 바꾼 경우 입력을 백업한 뒤 새로고침해 주세요.";
+  syncInputScopeUi();
+}
+
+function getInputScopeSelection() {
+  try {
+    const selection = JSON.parse(localStorage.getItem(INPUT_SCOPE_KEY) || "null");
+    if (selection?.mode === "local") return { mode: "local" };
+    if (selection?.mode === "admin" && typeof selection.uid === "string" && selection.uid.trim()) return selection;
+  } catch (error) { console.error(error); }
+  return null;
+}
+
+function syncInputScopeUi() {
+  const context = state.availableUserContext;
+  elements.inputScopeBtn.hidden = !shouldApplyAdminDefaults(context?.user, context?.profile);
+  elements.inputScopeBtn.textContent = getStateStorageKey() === STORAGE_KEY ? "로그인 저장 입력 열기" : "로컬 저장 입력 열기";
+  if (!state.isGenerating) elements.inputScopeBtn.disabled = !state.inputEditable;
+}
+
+function switchInputScope() {
+  const context = state.availableUserContext;
+  if (!state.inputEditable || state.isGenerating || !shouldApplyAdminDefaults(context?.user, context?.profile)) return;
+  if (state.hasUnsavedChanges) {
+    showToast("자동 저장을 다시 시도하고 입력 백업을 저장한 뒤 전환해 주세요.");
+    return;
+  }
+  const useAdmin = getStateStorageKey() === STORAGE_KEY;
+  if (!window.confirm(`${useAdmin ? "로그인 계정의" : "로컬"} 저장 입력을 열까요? 현재 입력은 원래 저장 범위에 보관되며 덮어쓰지 않습니다.`)) return;
+  try {
+    localStorage.setItem(INPUT_SCOPE_KEY, JSON.stringify(useAdmin ? { mode: "admin", uid: context.user.uid } : { mode: "local" }));
+  } catch (error) {
+    console.error(error);
+    showToast("저장 범위 선택을 보관하지 못해 전환하지 않았습니다. 입력 백업을 저장해 주세요.");
+    return;
+  }
+  state.currentUser = useAdmin ? context.user : null;
+  state.userProfile = useAdmin ? context.profile : null;
+  state.activeStorageKey = useAdmin ? getStateStorageKey(context.user, context.profile) : STORAGE_KEY;
+  restoreState();
+  if (useAdmin) applyAuthenticatedAdminDefaults();
+  renderActivePreset();
+  syncPresetUi();
+  updateSummary();
+  elements.undoNotice.hidden = !state.undoSnapshot || state.undoStorageKey !== getStateStorageKey();
+  elements.authStatus.textContent = `${useAdmin ? "로그인" : "로컬"} 저장 입력을 열었습니다. 다른 저장 범위의 입력도 그대로 보관되어 있습니다.`;
+  syncInputScopeUi();
+}
+
+function waitForAuthUser(subscribe) {
+  return new Promise((resolve) => {
+    let unsubscribe = () => {};
+    let settled = false;
+    const finish = (user) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { unsubscribe(); } catch (error) { console.error(error); }
+      resolve(user || null);
+    };
+    const timer = setTimeout(() => finish(null), AUTH_CONTEXT_TIMEOUT_MS);
+    try {
+      unsubscribe = subscribe(finish, () => finish(null)) || (() => {});
+      if (settled) unsubscribe();
+    } catch (error) {
+      clearTimeout(timer);
+      throw error;
+    }
+  });
 }
 
 function shouldApplyAdminDefaults(user, profile) {
@@ -199,18 +324,7 @@ async function loadCompatFirebaseUserContext() {
   }
 
   const auth = firebase.auth();
-  const user = await new Promise((resolve) => {
-    const unsubscribe = auth.onAuthStateChanged(
-      (nextUser) => {
-        unsubscribe();
-        resolve(nextUser || null);
-      },
-      () => {
-        unsubscribe();
-        resolve(null);
-      }
-    );
-  });
+  const user = await waitForAuthUser((success, failure) => auth.onAuthStateChanged(success, failure));
 
   if (!user?.uid) {
     return null;
@@ -238,19 +352,7 @@ async function loadModularFirebaseUserContext() {
     return null;
   }
 
-  const user = await new Promise((resolve) => {
-    const unsubscribe = firebaseServices.onAuthStateChanged(
-      firebaseServices.auth,
-      (nextUser) => {
-        unsubscribe();
-        resolve(nextUser || null);
-      },
-      () => {
-        unsubscribe();
-        resolve(null);
-      }
-    );
-  });
+  const user = await waitForAuthUser((success, failure) => firebaseServices.onAuthStateChanged(firebaseServices.auth, success, failure));
 
   if (!user?.uid) {
     return null;
@@ -613,6 +715,9 @@ function normalizeLookupValue(value) {
 }
 
 function getStateStorageKey(user = state.currentUser, profile = state.userProfile) {
+  if (arguments.length === 0 && state.activeStorageKey) {
+    return state.activeStorageKey;
+  }
   if (shouldApplyAdminDefaults(user, profile)) {
     return `${ADMIN_STATE_STORAGE_KEY_PREFIX}:${user.uid}`;
   }
@@ -662,27 +767,108 @@ function hasStoredAdminScopedState() {
 function setStoredStateRaw(value) {
   try {
     localStorage.setItem(getStateStorageKey(), value);
+    localStorage.setItem(INPUT_SCOPE_KEY, JSON.stringify(getStateStorageKey() === STORAGE_KEY
+      ? { mode: "local" } : { mode: "admin", uid: state.currentUser.uid }));
+    return true;
   } catch (error) {
     console.error(error);
+    return false;
+  }
+}
+
+function enforceInputReadOnly() {
+  if (state.inputEditable) return;
+  const allowed = ["generate-btn", "pick-folder-btn", "export-snapshot-btn", "acquire-input-btn"];
+  document.querySelectorAll(".page-shell input, .page-shell textarea, .page-shell select, .page-shell button, #snapshot-file-input").forEach((control) => {
+    if (allowed.includes(control.id)) return;
+    if (!state.inputReadOnlyControls.has(control)) state.inputReadOnlyControls.set(control, control.disabled);
+    control.disabled = true;
+  });
+}
+
+function syncInputEditingUi() {
+  if (state.inputEditable) {
+    state.inputReadOnlyControls.forEach((disabled, control) => { control.disabled = disabled; });
+    state.inputReadOnlyControls.clear();
+    syncPresetUi();
+    applyLayoutLockToCards();
+    setSessionCount(getSessionCount());
+  } else {
+    enforceInputReadOnly();
+  }
+  elements.inputEditingNotice.hidden = state.inputEditable;
+  elements.inputEditingMessage.textContent = state.inputConflict
+    ? "다른 탭의 저장 변경을 감지해 편집을 멈췄습니다. 현재 입력을 백업한 뒤 다른 탭을 닫고 새로고침해 주세요."
+    : window.navigator?.locks?.request
+      ? "다른 탭에서 입력을 편집 중입니다. 이 탭에서는 백업과 출력만 사용할 수 있습니다. 편집 탭을 닫은 뒤 편집권을 확인해 주세요."
+      : "이 브라우저는 입력 충돌 보호를 지원하지 않습니다. 최신 Edge 또는 Chrome에서 열어 주세요. 입력 백업은 사용할 수 있습니다.";
+  elements.acquireInputBtn.disabled = state.inputConflict || !window.navigator?.locks?.request;
+}
+
+async function acquireInputEditing() {
+  if (state.inputEditable) return true;
+  if (state.inputLockRequest) return state.inputLockRequest;
+  if (!window.navigator?.locks?.request || state.inputConflict) {
+    syncInputEditingUi();
+    return false;
+  }
+  state.inputLockRequest = new Promise((resolve) => {
+    void window.navigator.locks.request("word-lab-input", { ifAvailable: true }, async (lock) => {
+      if (!lock) {
+        syncInputEditingUi();
+        resolve(false);
+        return;
+      }
+      const released = new Promise((release) => { state.releaseInputLock = release; });
+      state.activeStorageKey = STORAGE_KEY;
+      state.currentUser = null;
+      state.userProfile = null;
+      restoreState();
+      renderActivePreset();
+      state.inputEditable = true;
+      syncInputEditingUi();
+      updateSummary();
+      resolve(true);
+      // The browser releases this lock when the document closes or reloads.
+      await released;
+    }).catch((error) => {
+      console.error(error);
+      state.inputEditable = false;
+      syncInputEditingUi();
+      resolve(false);
+    });
+  });
+  try { return await state.inputLockRequest; }
+  finally { state.inputLockRequest = null; }
+}
+
+async function handleAcquireInputEditing() {
+  if (state.isGenerating) return;
+  if (await acquireInputEditing()) {
+    void initializeOptionalUserContext();
+    showToast("편집권을 얻고 최신 저장 입력을 불러왔습니다.");
+  } else {
+    showToast("다른 편집 탭을 닫은 뒤 다시 확인해 주세요.");
   }
 }
 
 async function initializeApp() {
   cacheElements();
+  setRunStatus("아직 생성 전입니다.", "success");
   initializeOutputDateControl();
-  bindGlobalEvents();
   initializeNativeBridge();
-  await initializeCurrentUserContext();
+  state.activeStorageKey = getStateStorageKey();
   restoreState();
-  applyAuthenticatedAdminDefaults();
 
   renderActivePreset();
+  bindGlobalEvents();
   syncPresetUi();
   syncSaveRootUi();
+  await acquireInputEditing();
+  void initializeOptionalUserContext();
   await restoreSaveRootHandle();
   await updateOutputFolderPreview();
   updateSummary();
-  setRunStatus("아직 생성 전입니다.", "success");
 }
 
 function cacheElements() {
@@ -692,10 +878,20 @@ function cacheElements() {
   elements.seedDemoBtn = document.getElementById("seed-demo-btn");
   elements.toggleLayoutLockBtn = document.getElementById("toggle-layout-lock-btn");
   elements.importSnapshotBtn = document.getElementById("import-snapshot-btn");
+  elements.exportSnapshotBtn = document.getElementById("export-snapshot-btn");
+  elements.undoReplacementBtn = document.getElementById("undo-replacement-btn");
+  elements.undoNotice = document.getElementById("undo-notice");
+  elements.storageWarning = document.getElementById("storage-warning");
+  elements.retrySaveBtn = document.getElementById("retry-save-btn");
+  elements.inputEditingNotice = document.getElementById("input-editing-notice");
+  elements.inputEditingMessage = document.getElementById("input-editing-message");
+  elements.acquireInputBtn = document.getElementById("acquire-input-btn");
+  elements.inputScopeBtn = document.getElementById("input-scope-btn");
   elements.snapshotFileInput = document.getElementById("snapshot-file-input");
   elements.pickFolderBtn = document.getElementById("pick-folder-btn");
   elements.generateBtn = document.getElementById("generate-btn");
   elements.questionCountInput = document.getElementById("question-count");
+  elements.questionCountValidation = document.getElementById("question-count-validation");
   elements.sessionCountInput = document.getElementById("session-count-input");
   elements.sessionCountDisplay = document.getElementById("session-count-display");
   elements.sessionCountDecreaseBtn = document.getElementById("session-count-decrease");
@@ -711,6 +907,8 @@ function cacheElements() {
   elements.metricPdfCount = document.getElementById("metric-pdf-count");
   elements.metricFolderName = document.getElementById("metric-folder-name");
   elements.runStatus = document.getElementById("run-status");
+  elements.authStatus = document.getElementById("auth-status");
+  elements.validationNotes = document.getElementById("validation-notes");
   elements.toast = document.getElementById("toast");
   elements.renderStage = document.getElementById("render-stage");
 }
@@ -728,6 +926,26 @@ function bindGlobalEvents() {
   });
 
   elements.seedDemoBtn.addEventListener("click", seedDemoData);
+  elements.exportSnapshotBtn.addEventListener("click", exportSnapshot);
+  elements.undoReplacementBtn.addEventListener("click", undoLastReplacement);
+  elements.retrySaveBtn.addEventListener("click", persistState);
+  elements.acquireInputBtn.addEventListener("click", handleAcquireInputEditing);
+  elements.inputScopeBtn.addEventListener("click", switchInputScope);
+  window.addEventListener("storage", (event) => {
+    if (state.inputEditable && (event.key === getStateStorageKey() || event.key === null)) {
+      state.inputConflict = true;
+      state.inputEditable = false;
+      state.hasUnsavedChanges = true;
+      elements.storageWarning.hidden = false;
+      syncInputEditingUi();
+    }
+  });
+  window.addEventListener("beforeunload", (event) => {
+    if (state.hasUnsavedChanges || state.isGenerating) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+  });
   elements.toggleLayoutLockBtn.addEventListener("click", toggleActivePresetLock);
   elements.importSnapshotBtn.addEventListener("click", () => {
     elements.snapshotFileInput.click();
@@ -948,6 +1166,8 @@ function normalizeQuizMode(value, fallback = DEFAULT_CLASS_QUIZ_MODE) {
 }
 
 function persistState() {
+  if (!state.inputEditable) return false;
+  state.localRevision += 1;
   captureActivePresetClassesFromDom();
   const payload = {
     settings: getSettings(),
@@ -963,7 +1183,10 @@ function persistState() {
     }, {}),
   };
 
-  setStoredStateRaw(JSON.stringify(payload));
+  const saved = setStoredStateRaw(JSON.stringify(payload));
+  state.hasUnsavedChanges = !saved;
+  elements.storageWarning.hidden = saved;
+  return saved;
 }
 
 function getSettings() {
@@ -976,6 +1199,15 @@ function getSettings() {
     ),
     sessionCount: getSessionCount(),
   };
+}
+
+function getQuestionCountError() {
+  const raw = String(elements.questionCountInput.value || "").trim();
+  const value = Number(raw);
+  if (!raw || !Number.isInteger(value) || value < 5 || value > 100) {
+    return { type: "error", field: "questionCount", text: "시험지당 문항 수는 5~100의 정수로 입력해 주세요." };
+  }
+  return null;
 }
 
 function getActivePresetState() {
@@ -1028,8 +1260,30 @@ function buildSnapshotPayload(dateFolderName = "") {
 }
 
 function normalizeSnapshotImport(snapshot) {
-  if (!snapshot || typeof snapshot !== "object") {
-    throw new Error("복원 파일 내용이 비어 있습니다.");
+  const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  if (!isRecord(snapshot) || snapshot.appName !== "WORD LAB" || snapshot.version !== 1) {
+    throw new Error("WORD LAB 버전 1 복원 JSON 파일을 선택해 주세요.");
+  }
+  if (!isRecord(snapshot.settings) ||
+      !Number.isInteger(snapshot.settings.questionCount) ||
+      snapshot.settings.questionCount < 5 || snapshot.settings.questionCount > 100 ||
+      !Number.isInteger(snapshot.settings.sessionCount) ||
+      snapshot.settings.sessionCount < 1 || snapshot.settings.sessionCount > 5 ||
+      !CLASS_PRESET_CONFIG.some((preset) => preset.id === snapshot.activePresetId) ||
+      !isRecord(snapshot.presets)) {
+    throw new Error("복원 파일의 설정 또는 반 그룹 형식이 올바르지 않습니다.");
+  }
+  for (const { id } of CLASS_PRESET_CONFIG) {
+    const preset = snapshot.presets[id];
+    if (!isRecord(preset) || !Array.isArray(preset.classes) ||
+        (preset.teacherName !== undefined && typeof preset.teacherName !== "string") ||
+        (preset.layoutLocked !== undefined && typeof preset.layoutLocked !== "boolean") ||
+        preset.classes.some((item) => !isRecord(item) ||
+          typeof item.className !== "string" || typeof item.rawText !== "string" ||
+          (item.classId !== undefined && typeof item.classId !== "string") ||
+          (item.quizMode !== undefined && !["word-to-meaning", "meaning-to-word"].includes(item.quizMode)))) {
+      throw new Error("복원 파일의 반 이름·단어·설정 형식이 올바르지 않습니다.");
+    }
   }
 
   const normalized = normalizeSavedState({
@@ -1073,7 +1327,7 @@ async function handleSnapshotImport(event) {
   const file = event.target.files?.[0];
   elements.snapshotFileInput.value = "";
 
-  if (!file) {
+  if (!file || state.isGenerating) {
     return;
   }
 
@@ -1081,21 +1335,71 @@ async function handleSnapshotImport(event) {
     const raw = await file.text();
     const parsed = JSON.parse(raw);
     const normalized = normalizeSnapshotImport(parsed);
-
-    state.presets = normalized.presets;
-    state.activePresetId = normalized.activePresetId;
-    applySettings(normalized.settings);
-    setCheckedValue("class-preset", state.activePresetId);
-    renderActivePreset();
-    syncPresetUi();
-    persistState();
-    updateSummary();
-    showToast("복원 파일을 불러왔습니다. 반별 단어가 다시 채워졌습니다.");
+    if (state.isGenerating || !prepareStateReplacement("두 반 그룹의 현재 입력을 복원 파일 내용으로 바꿀까요?")) {
+      return;
+    }
+    const saved = applyRestoredSnapshot(normalized);
+    showToast(saved
+      ? "복원 파일을 불러왔습니다. 직전 입력은 이 탭에서 되돌릴 수 있습니다."
+      : "입력을 불러왔지만 자동 저장에 실패했습니다. 입력 백업을 저장해 주세요.");
   } catch (error) {
     console.error(error);
     setRunStatus(`복원 파일을 읽지 못했습니다. ${formatErrorDetail(error)}`, "error");
     showToast(`복원 파일 오류: ${formatErrorDetail(error)}`);
   }
+}
+
+function prepareStateReplacement(message) {
+  if (state.isGenerating || !state.inputEditable) {
+    return false;
+  }
+  const snapshot = buildSnapshotPayload();
+  const hasInput = Object.values(snapshot.presets).some((preset) =>
+    preset.teacherName.trim() || preset.classes.some((item) => item.className.trim() || item.rawText.trim())
+  ) || snapshot.settings.questionCount !== DEFAULT_SETTINGS.questionCount ||
+    snapshot.settings.sessionCount !== DEFAULT_SETTINGS.sessionCount;
+  if (hasInput && !window.confirm(`${message}\n직전 입력은 이 탭을 닫거나 새로고침하기 전까지 되돌릴 수 있습니다.`)) {
+    return false;
+  }
+  state.undoSnapshot = snapshot;
+  state.undoStorageKey = getStateStorageKey();
+  elements.undoNotice.hidden = false;
+  return true;
+}
+
+function applyRestoredSnapshot(snapshot) {
+  state.presets = snapshot.presets;
+  state.activePresetId = snapshot.activePresetId;
+  applySettings(snapshot.settings);
+  setCheckedValue("class-preset", state.activePresetId);
+  renderActivePreset();
+  syncPresetUi();
+  const saved = persistState();
+  updateSummary();
+  return saved;
+}
+
+function undoLastReplacement() {
+  if (state.isGenerating || !state.inputEditable || !state.undoSnapshot ||
+      (state.undoStorageKey && state.undoStorageKey !== getStateStorageKey()) ||
+      !window.confirm("직전 교체·삭제 전 입력으로 되돌릴까요? 이후 입력한 내용도 이전 상태로 바뀝니다.")) {
+    return;
+  }
+  const snapshot = state.undoSnapshot;
+  state.undoSnapshot = null;
+  elements.undoNotice.hidden = true;
+  const saved = applyRestoredSnapshot(snapshot);
+  showToast(saved ? "직전 입력을 복구했습니다." : "입력을 복구했지만 자동 저장에 실패했습니다. 입력 백업을 저장해 주세요.");
+}
+
+function exportSnapshot() {
+  const blob = new Blob([JSON.stringify(buildSnapshotPayload(), null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = SNAPSHOT_FILE_NAME;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function switchActivePreset(presetId) {
@@ -1156,6 +1460,7 @@ function syncPresetUi() {
 
   elements.teacherNameInput.readOnly = activePreset.layoutLocked;
   elements.teacherNameInput.classList.toggle("is-readonly", activePreset.layoutLocked);
+  enforceInputReadOnly();
 }
 
 function applyLayoutLockToCards() {
@@ -1170,6 +1475,7 @@ function applyLayoutLockToCards() {
     card.classList.toggle("layout-locked", locked);
     removeBtn.disabled = locked;
   });
+  enforceInputReadOnly();
 }
 
 function addClassCard(initialData = {}) {
@@ -1177,10 +1483,12 @@ function addClassCard(initialData = {}) {
   const card = fragment.querySelector(".class-card");
   const nameInput = card.querySelector(".class-name-input");
   const textArea = card.querySelector(".paste-area");
-  const title = card.querySelector("h4");
+  const title = card.querySelector(".class-title");
   const removeBtn = card.querySelector(".remove-class-btn");
   const modeInputs = Array.from(card.querySelectorAll(".class-quiz-mode-input"));
   const modeGroupName = `class-quiz-mode-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const validationNote = card.querySelector(".class-validation");
+  validationNote.id = `${modeGroupName}-validation`;
 
   const initialName = initialData.className || "";
   card.dataset.classId = String(initialData.classId || initialData.id || "");
@@ -1211,6 +1519,9 @@ function addClassCard(initialData = {}) {
   });
 
   removeBtn.addEventListener("click", () => {
+    if (state.isGenerating) {
+      return;
+    }
     if (isActivePresetLocked()) {
       showToast("반 구성 편집을 먼저 켜야 반을 삭제할 수 있습니다.");
       return;
@@ -1221,6 +1532,9 @@ function addClassCard(initialData = {}) {
       return;
     }
 
+    if (!prepareStateReplacement(`“${nameInput.value.trim() || "새 반"}” 반과 단어를 삭제할까요?`)) {
+      return;
+    }
     card.remove();
     persistState();
     updateSummary();
@@ -1285,6 +1599,11 @@ function parseVocabulary(rawText) {
     : normalizedText.split(/\r?\n/).map((line) => [line]);
 
   rows.forEach((row, index) => {
+    const lineNumber = row.lineNumber ?? index + 1;
+    if (row.invalidReason) {
+      invalidLines.push({ lineNumber, content: row.join("\t"), reason: row.invalidReason });
+      return;
+    }
     const parsedRow = row.length >= 2
       ? [row[0], buildMeaningFromParts(row)]
       : splitVocabularyLine(String(row[0] || "").trim());
@@ -1292,7 +1611,7 @@ function parseVocabulary(rawText) {
     if (!parsedRow) {
       const rawRow = row.map((cell) => String(cell || "")).join("\t").trim();
       if (rawRow) {
-        invalidLines.push({ lineNumber: index + 1, content: rawRow });
+        invalidLines.push({ lineNumber, content: rawRow });
       }
       return;
     }
@@ -1303,7 +1622,7 @@ function parseVocabulary(rawText) {
 
     if (!word || !meaning) {
       invalidLines.push({
-        lineNumber: index + 1,
+        lineNumber,
         content: row.map((cell) => String(cell || "")).join("\t"),
       });
       return;
@@ -1346,11 +1665,24 @@ function parseTabularRows(rawText) {
   let row = [];
   let cell = "";
   let inQuotes = false;
+  let lineNumber = 1;
+  let rowStartLine = 1;
+
+  const finishRow = () => {
+    row.push(cell);
+    row.lineNumber = rowStartLine;
+    if (row.some((value) => String(value).trim())) {
+      rows.push(row);
+    }
+    row = [];
+    cell = "";
+    rowStartLine = lineNumber + 1;
+  };
 
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index];
 
-    if (char === "\"") {
+    if (char === "\"" && (inQuotes || cell === "")) {
       const nextChar = text[index + 1];
 
       if (inQuotes && nextChar === "\"") {
@@ -1370,22 +1702,21 @@ function parseTabularRows(rawText) {
     }
 
     if (char === "\n" && !inQuotes) {
-      row.push(cell);
-      if (row.some((value) => String(value).trim())) {
-        rows.push(row);
-      }
-      row = [];
-      cell = "";
+      finishRow();
+      lineNumber += 1;
       continue;
     }
 
     cell += char;
+    if (char === "\n") {
+      lineNumber += 1;
+    }
   }
 
-  row.push(cell);
-  if (row.some((value) => String(value).trim())) {
-    rows.push(row);
+  if (inQuotes) {
+    row.invalidReason = "닫히지 않은 따옴표가 있습니다. 해당 줄부터 입력 형식을 확인해 주세요.";
   }
+  finishRow();
 
   return rows;
 }
@@ -1525,7 +1856,8 @@ function collectClassCards() {
 }
 
 function collectClassModels() {
-  return collectClassCards().map((card) => ({
+  return collectClassCards().map((card, classIndex) => ({
+    classIndex,
     className: card.querySelector(".class-name-input").value.trim(),
     quizMode: getClassCardQuizMode(card),
     parsed: card._parsed || parseVocabulary(card.querySelector(".paste-area").value),
@@ -1557,6 +1889,7 @@ function getEffectiveQuestionCount(model, settings) {
 
 function updateSummary() {
   const settings = getSettings();
+  const questionCountError = getQuestionCountError();
   const classModels = filterMeaningfulClassModels(collectClassModels());
   const printableClassModels = filterPrintableClassModels(classModels);
   const totalWords = printableClassModels.reduce(
@@ -1581,13 +1914,14 @@ function updateSummary() {
   setElementTextAndTitle(elements.metricFolderName, state.saveRootName || "미연결");
 
   if (!classModels.length) {
-    setValidationNotes([]);
+    setValidationNotes(questionCountError ? [questionCountError] : []);
     return;
   }
 
   const messages = validateClassModels(classModels, settings, {
     includeSuccess: true,
   });
+  if (questionCountError) messages.unshift(questionCountError);
   setValidationNotes(messages);
 }
 
@@ -1596,25 +1930,32 @@ function validateClassModels(classModels, settings, options = {}) {
   const messages = [];
   const names = new Map();
 
-  if (!Number.isFinite(settings.questionCount) || settings.questionCount < 5) {
-    messages.push({ type: "error", text: "문항 수는 5 이상이어야 합니다." });
+  if (!Number.isInteger(settings.questionCount) || settings.questionCount < 5 || settings.questionCount > 100) {
+    messages.push({ type: "error", field: "questionCount", text: "시험지당 문항 수는 5~100의 정수로 입력해 주세요." });
   }
 
   meaningfulModels.forEach((model, index) => {
+    const classIndex = model.classIndex ?? index;
     const label = model.className || `${index + 1}번 반`;
     const folderKey = sanitizeFilePart(
       model.className || `class-${index + 1}`
     ).toLocaleLowerCase();
 
     if (!model.className.trim()) {
-      messages.push({ type: "error", text: `${label}: 반 이름이 비어 있습니다.` });
+      messages.push({ type: "error", text: `${label}: 반 이름이 비어 있습니다.`, classIndex, field: "className" });
       return;
+    }
+
+    if (model.parsed.invalidLines?.length) {
+      const lines = model.parsed.invalidLines.map((line) => line.lineNumber).join(", ");
+      messages.push({ type: "warning", text: `${label}: ${lines}번째 줄의 입력 형식이 올바르지 않아 제외했습니다. 단어·뜻과 닫히지 않은 따옴표를 확인해 주세요.`, classIndex, field: "rawText" });
     }
 
     if (!model.parsed.entries.length) {
       messages.push({
         type: "warning",
         text: `${label}: 유효한 단어가 없어 이번 생성에서는 건너뜁니다.`,
+        classIndex, field: "rawText",
       });
       return;
     }
@@ -1623,6 +1964,7 @@ function validateClassModels(classModels, settings, options = {}) {
       messages.push({
         type: "error",
         text: `${label}: 저장 폴더명이 겹치는 반이 있습니다.`,
+        classIndex, field: "className",
       });
       return;
     }
@@ -1634,6 +1976,7 @@ function validateClassModels(classModels, settings, options = {}) {
       messages.push({
         type: "warning",
         text: `${label}: 단어가 ${model.parsed.entries.length}개이므로 문항은 ${questionCount}개만 출력됩니다.`,
+        classIndex, field: "rawText",
       });
     }
 
@@ -1642,6 +1985,7 @@ function validateClassModels(classModels, settings, options = {}) {
       messages.push({
         type: "warning",
         text: `${label}: 차수 간 완전 무중복은 불가능합니다. ${model.parsed.entries.length}개 단어로 ${settings.sessionCount}차 x ${questionCount}문항을 만들면 총 ${totalNeeded}칸이 필요합니다.`,
+        classIndex, field: "rawText",
       });
     } else if (options.includeSuccess && questionCount) {
       messages.push({
@@ -1652,7 +1996,7 @@ function validateClassModels(classModels, settings, options = {}) {
   });
 
   if (!meaningfulModels.length) {
-    messages.push({ type: "error", text: "반 이름과 단어를 하나 이상 입력해 주세요." });
+    messages.push({ type: "error", text: "반 이름과 단어를 하나 이상 입력해 주세요.", classIndex: 0, field: "className" });
   }
 
   return messages;
@@ -1662,6 +2006,34 @@ function setValidationNotes(messages) {
   if (!elements.validationNotes) {
     return;
   }
+
+  const questionCountError = messages.find((message) => message.field === "questionCount");
+  elements.questionCountValidation.hidden = !questionCountError;
+  elements.questionCountValidation.textContent = questionCountError?.text || "";
+  elements.questionCountInput.removeAttribute("aria-invalid");
+  elements.questionCountInput.removeAttribute("aria-describedby");
+  if (questionCountError) {
+    elements.questionCountInput.setAttribute("aria-invalid", "true");
+    elements.questionCountInput.setAttribute("aria-describedby", "question-count-validation");
+  }
+
+  collectClassCards().forEach((card, classIndex) => {
+    const note = card.querySelector(".class-validation");
+    const cardMessages = messages.filter((message) => message.classIndex === classIndex);
+    note.hidden = !cardMessages.length;
+    note.innerHTML = cardMessages.map((message) => `<div>${escapeHtml(prefixMessage(message))}</div>`).join("");
+    for (const [field, selector] of [["className", ".class-name-input"], ["rawText", ".paste-area"]]) {
+      const input = card.querySelector(selector);
+      input.removeAttribute("aria-invalid");
+      input.removeAttribute("aria-describedby");
+      if (cardMessages.some((message) => message.field === field)) {
+        input.setAttribute("aria-describedby", note.id);
+        if (cardMessages.some((message) => message.field === field && message.type === "error")) {
+          input.setAttribute("aria-invalid", "true");
+        }
+      }
+    }
+  });
 
   if (!messages.length) {
     elements.validationNotes.className = "status-panel info";
@@ -1679,9 +2051,14 @@ function setValidationNotes(messages) {
       ? "status-panel info"
       : "status-panel success";
 
-  elements.validationNotes.innerHTML = messages
-    .map((message) => `<div>${escapeHtml(prefixMessage(message))}</div>`)
-    .join("");
+  if (hasError) {
+    elements.validationNotes.innerHTML = messages.filter((message) => message.type === "error")
+      .map((message) => `<div>${escapeHtml(prefixMessage(message))}</div>`).join("");
+  } else {
+    elements.validationNotes.textContent = hasWarning
+      ? `주의 ${messages.filter((message) => message.type === "warning").length}건 · 각 반의 입력 안내를 확인해 주세요.`
+      : "입력 확인이 끝났습니다. PDF를 생성할 수 있습니다.";
+  }
 }
 
 function prefixMessage(message) {
@@ -1721,6 +2098,7 @@ async function handlePickFolderClick() {
 async function chooseNativeSaveRoot() {
   try {
     const status = await callNativeHost("chooseSaveRoot");
+    state.saveRootRevision += 1;
     applyNativeSaveRootStatus(status);
     syncSaveRootUi();
     updateSummary();
@@ -1766,6 +2144,7 @@ async function chooseSaveRoot() {
 }
 
 async function activateSaveRootHandle(handle) {
+  state.saveRootRevision += 1;
   state.saveRootHandle = handle;
   state.rememberedSaveRootHandle = handle;
   state.saveRootName = handle.name || "";
@@ -1774,11 +2153,14 @@ async function activateSaveRootHandle(handle) {
 }
 
 async function restoreSaveRootHandle() {
+  const revision = state.saveRootRevision;
   if (hasNativeHost()) {
     try {
       const status = await callNativeHost("getSaveRootStatus");
+      if (revision !== state.saveRootRevision) return;
       applyNativeSaveRootStatus(status);
     } catch (error) {
+      if (revision !== state.saveRootRevision) return;
       console.error(error);
       state.saveRootHandle = null;
       state.rememberedSaveRootHandle = null;
@@ -1795,23 +2177,24 @@ async function restoreSaveRootHandle() {
 
   try {
     const handle = await getStoredSaveRootHandle();
-    if (!handle) {
+    if (revision !== state.saveRootRevision || !handle) {
       return;
     }
 
+    const permission = await verifyDirectoryPermission(handle, false);
+    if (revision !== state.saveRootRevision) return;
     state.rememberedSaveRootHandle = handle;
     state.saveRootName = handle.name || "";
-
-    const permission = await verifyDirectoryPermission(handle, false);
     if (permission === "granted") {
       state.saveRootHandle = handle;
     }
   } catch (error) {
+    if (revision !== state.saveRootRevision) return;
     console.error(error);
-    await clearStoredSaveRootHandle();
     state.saveRootHandle = null;
     state.rememberedSaveRootHandle = null;
     state.saveRootName = "";
+    await clearStoredSaveRootHandle(revision);
   }
 
   syncSaveRootUi();
@@ -1822,31 +2205,35 @@ async function restoreRememberedSaveRoot(requestIfNeeded) {
     return false;
   }
 
+  const revision = state.saveRootRevision;
+  const handle = state.rememberedSaveRootHandle;
   try {
     const permission = await verifyDirectoryPermission(
-      state.rememberedSaveRootHandle,
+      handle,
       requestIfNeeded
     );
+    if (revision !== state.saveRootRevision) return Boolean(state.saveRootHandle);
 
     if (permission !== "granted") {
       syncSaveRootUi();
       return false;
     }
 
-    state.saveRootHandle = state.rememberedSaveRootHandle;
-    state.saveRootName = state.rememberedSaveRootHandle.name || state.saveRootName;
+    state.saveRootHandle = handle;
+    state.saveRootName = handle.name || state.saveRootName;
     syncSaveRootUi();
     updateSummary();
     return true;
   } catch (error) {
+    if (revision !== state.saveRootRevision) return Boolean(state.saveRootHandle);
     console.error(error);
-    await clearStoredSaveRootHandle();
     state.saveRootHandle = null;
     state.rememberedSaveRootHandle = null;
     state.saveRootName = "";
+    await clearStoredSaveRootHandle(revision);
     syncSaveRootUi();
     updateSummary();
-    return false;
+    return Boolean(state.saveRootHandle);
   }
 }
 
@@ -1942,9 +2329,11 @@ async function getStoredSaveRootHandle() {
 }
 
 async function persistSaveRootHandle(handle) {
+  const revision = state.saveRootRevision;
   const database = await openHandleDatabase();
 
   try {
+    if (revision !== state.saveRootRevision) return;
     await new Promise((resolve, reject) => {
       const transaction = database.transaction(HANDLE_STORE_NAME, "readwrite");
       const request = transaction.objectStore(HANDLE_STORE_NAME).put(handle, SAVE_ROOT_HANDLE_KEY);
@@ -1958,7 +2347,7 @@ async function persistSaveRootHandle(handle) {
   }
 }
 
-async function clearStoredSaveRootHandle() {
+async function clearStoredSaveRootHandle(revision = state.saveRootRevision) {
   if (!("indexedDB" in window)) {
     return;
   }
@@ -1966,6 +2355,7 @@ async function clearStoredSaveRootHandle() {
   const database = await openHandleDatabase();
 
   try {
+    if (revision !== state.saveRootRevision) return;
     await new Promise((resolve, reject) => {
       const transaction = database.transaction(HANDLE_STORE_NAME, "readwrite");
       const request = transaction.objectStore(HANDLE_STORE_NAME).delete(SAVE_ROOT_HANDLE_KEY);
@@ -1984,11 +2374,19 @@ async function handleGenerate() {
     return;
   }
 
-  const settings = getSettings();
-  const allClassModels = collectClassModels();
+  const snapshotPayload = buildSnapshotPayload();
+  const settings = snapshotPayload.settings;
+  const allClassModels = snapshotPayload.presets[snapshotPayload.activePresetId].classes.map((item, classIndex) => ({
+    classIndex,
+    className: item.className.trim(),
+    quizMode: item.quizMode,
+    parsed: parseVocabulary(item.rawText),
+  }));
   const classModels = filterMeaningfulClassModels(allClassModels);
   const printableClassModels = filterPrintableClassModels(classModels);
   const validationMessages = validateClassModels(classModels, settings);
+  const questionCountError = getQuestionCountError();
+  if (questionCountError) validationMessages.unshift(questionCountError);
   const blockingErrors = validationMessages.filter(
     (message) => message.type === "error"
   );
@@ -1997,7 +2395,11 @@ async function handleGenerate() {
 
   if (blockingErrors.length) {
     setRunStatus("PDF 생성 실패", "error");
-    showToast("입력 오류가 있어 생성할 수 없습니다.");
+    showToast(blockingErrors[0].text);
+    const firstError = blockingErrors[0];
+    const card = collectClassCards()[firstError.classIndex];
+    const input = card?.querySelector(firstError.field === "rawText" ? ".paste-area" : ".class-name-input");
+    (input || elements.questionCountInput).focus();
     return;
   }
 
@@ -2007,142 +2409,154 @@ async function handleGenerate() {
     return;
   }
 
-  if (!(await ensureWritableSaveRootHandle())) {
-    setRunStatus("PDF 생성 실패", "error");
-    return;
-  }
-
   setGenerating(true);
-  const now = new Date();
   const requestedOutputFolderName = getBaseOutputFolderName();
-  const dateLabel = formatDisplayDate(now);
+  const dateLabel = getSelectedOutputDateFolderName().replace(/-/g, ".");
   const warnings = validationMessages
     .filter((message) => message.type === "warning")
     .map((message) => message.text);
+  let outputFolderName = requestedOutputFolderName;
+  let completedFiles = 0;
 
   try {
-    const outputFolderName = await resolveAvailableOutputFolderName(
-      requestedOutputFolderName
-    );
-    const generationTarget = await createGenerationTarget(outputFolderName);
-    let completedFiles = 0;
-    const totalFiles = printableClassModels.length * settings.sessionCount * 2;
-    let zipSaved = false;
-    const zipEntries = [];
-
-    for (const model of printableClassModels) {
-      const safeClassName = sanitizeFilePart(model.className);
-      const questionCount = getEffectiveQuestionCount(model, settings);
-      const sessionBundles = buildSessionBundles(
-        model.parsed.entries,
-        settings.sessionCount,
-        questionCount
-      );
-
-      if (!sessionBundles.fullyUnique) {
-        warnings.push(`${model.className}: 차수 간 일부 단어 중복이 포함되었습니다.`);
-      }
-
-      for (let index = 0; index < sessionBundles.sessions.length; index += 1) {
-        const sessionNumber = index + 1;
-        setRunStatus("PDF 생성 중...", "running");
-        const items = sessionBundles.sessions[index];
-
-        const pages = buildSheetPages({
-          className: model.className,
-          sessionNumber,
-          items,
-          quizMode: model.quizMode,
-          dateLabel,
-        });
-
-        const pdfBuffer = await renderPagesToPdfBuffer(
-          pages,
-          `입시코드학원 ${model.className} ${sessionNumber}차 단어시험지`
-        );
-        const fileName = `${safeClassName}_${sessionNumber}차.pdf`;
-        await writeGeneratedPdfFile(generationTarget, safeClassName, fileName, pdfBuffer);
-        zipEntries.push({
-          path: `${outputFolderName}/${safeClassName}/${fileName}`,
-          data: pdfBuffer,
-        });
-        completedFiles += 1;
-
-        setRunStatus("PDF 생성 중...", "running");
-
-        const answerPages = buildAnswerSheetPages({
-          className: model.className,
-          sessionNumber,
-          items,
-          quizMode: model.quizMode,
-          dateLabel,
-        });
-
-        const answerPdfBuffer = await renderPagesToPdfBuffer(
-          answerPages,
-          `입시코드학원 ${model.className} ${sessionNumber}차 답지`
-        );
-        const answerFileName = `${safeClassName}_${sessionNumber}차_답지.pdf`;
-        await writeGeneratedPdfFile(
-          generationTarget,
-          safeClassName,
-          answerFileName,
-          answerPdfBuffer
-        );
-        zipEntries.push({
-          path: `${outputFolderName}/${safeClassName}/${answerFileName}`,
-          data: answerPdfBuffer,
-        });
-        completedFiles += 1;
-      }
+    if (!(await ensureWritableSaveRootHandle())) {
+      return;
     }
+    setRunStatus("출력 준비 중 · 다른 탭에서 생성 중이면 완료될 때까지 기다립니다.", "running");
+    await withOutputLock(async () => {
+      outputFolderName = await resolveAvailableOutputFolderName(
+        requestedOutputFolderName
+      );
+      const generationTarget = await createGenerationTarget(outputFolderName);
+      const totalFiles = printableClassModels.length * settings.sessionCount * 2;
+      let snapshotSaved = false;
+      let zipSaved = false;
+      const zipEntries = [];
 
-    try {
-      const snapshotPayload = buildSnapshotPayload(outputFolderName);
+      for (const model of printableClassModels) {
+        const safeClassName = sanitizeFilePart(model.className);
+        const questionCount = getEffectiveQuestionCount(model, settings);
+        const sessionBundles = buildSessionBundles(
+          model.parsed.entries,
+          settings.sessionCount,
+          questionCount
+        );
+
+        if (!sessionBundles.fullyUnique) {
+          warnings.push(`${model.className}: 차수 간 일부 단어 중복이 포함되었습니다.`);
+        }
+
+        for (let index = 0; index < sessionBundles.sessions.length; index += 1) {
+          const sessionNumber = index + 1;
+          setRunStatus(`PDF ${completedFiles}/${totalFiles}개 저장됨 · ${model.className} ${sessionNumber}차 시험지 생성 중`, "running");
+          const items = sessionBundles.sessions[index];
+
+          const pages = buildSheetPages({
+            className: model.className,
+            sessionNumber,
+            items,
+            quizMode: model.quizMode,
+            dateLabel,
+          });
+
+          const pdfBuffer = await renderPagesToPdfBuffer(
+            pages,
+            `입시코드학원 ${model.className} ${sessionNumber}차 단어시험지`
+          );
+          const fileName = `${safeClassName}_${sessionNumber}차.pdf`;
+          await writeGeneratedPdfFile(generationTarget, safeClassName, fileName, pdfBuffer);
+          zipEntries.push({
+            path: `${outputFolderName}/${safeClassName}/${fileName}`,
+            data: pdfBuffer,
+          });
+          completedFiles += 1;
+
+          setRunStatus(`PDF ${completedFiles}/${totalFiles}개 저장됨 · ${model.className} ${sessionNumber}차 답지 생성 중`, "running");
+
+          const answerPages = buildAnswerSheetPages({
+            className: model.className,
+            sessionNumber,
+            items,
+            quizMode: model.quizMode,
+            dateLabel,
+          });
+
+          const answerPdfBuffer = await renderPagesToPdfBuffer(
+            answerPages,
+            `입시코드학원 ${model.className} ${sessionNumber}차 답지`
+          );
+          const answerFileName = `${safeClassName}_${sessionNumber}차_답지.pdf`;
+          await writeGeneratedPdfFile(
+            generationTarget,
+            safeClassName,
+            answerFileName,
+            answerPdfBuffer
+          );
+          zipEntries.push({
+            path: `${outputFolderName}/${safeClassName}/${answerFileName}`,
+            data: answerPdfBuffer,
+          });
+          completedFiles += 1;
+        }
+      }
+
+      snapshotPayload.dateFolderName = outputFolderName;
+      setRunStatus(`PDF ${completedFiles}/${totalFiles}개 저장됨 · 복원 JSON·ZIP 저장 중`, "running");
       const snapshotText = JSON.stringify(snapshotPayload, null, 2);
-      await writeGeneratedTextFile(generationTarget, SNAPSHOT_FILE_NAME, snapshotText);
       zipEntries.push({
         path: `${outputFolderName}/${SNAPSHOT_FILE_NAME}`,
         data: snapshotText,
       });
-    } catch (snapshotError) {
-      console.error(snapshotError);
-      warnings.push(`복원 파일 저장 실패: ${formatErrorDetail(snapshotError)}`);
-    }
+      try {
+        await writeGeneratedTextFile(generationTarget, SNAPSHOT_FILE_NAME, snapshotText);
+        snapshotSaved = true;
+      } catch (snapshotError) {
+        console.error(snapshotError);
+        warnings.push(`복원 파일 저장 실패: ${formatErrorDetail(snapshotError)}`);
+      }
 
-    try {
-      const zipBuffer = createZipArchive(zipEntries);
-      await writeGeneratedZipFile(generationTarget, `${outputFolderName}.zip`, zipBuffer);
-      zipSaved = true;
-    } catch (zipError) {
-      console.error(zipError);
-      warnings.push(`ZIP 저장 실패: ${formatErrorDetail(zipError)}`);
-    }
+      try {
+        const zipBuffer = createZipArchive(zipEntries);
+        await writeGeneratedZipFile(generationTarget, `${outputFolderName}.zip`, zipBuffer);
+        zipSaved = true;
+      } catch (zipError) {
+        console.error(zipError);
+        warnings.push(`ZIP 저장 실패: ${formatErrorDetail(zipError)}`);
+      }
 
-    setRunStatus(`PDF 생성 완료 · ${outputFolderName}`, "success");
-    showToast(
-      zipSaved
-        ? `${outputFolderName}: PDF ${totalFiles}개와 ZIP 1개 생성이 끝났습니다.`
-        : `${outputFolderName}: PDF ${totalFiles}개 생성이 끝났습니다. ZIP 생성은 실패했습니다.`
-    );
+      const partial = !snapshotSaved || !zipSaved;
+      const summary = `${partial ? "일부 저장 실패" : "생성 완료"} · ${outputFolderName}\nPDF ${totalFiles}개 · 복원 JSON ${snapshotSaved ? "저장됨" : "저장 실패"} · ZIP ${zipSaved ? "저장됨 (복원 JSON 포함)" : "저장 실패"}`;
+      setRunStatus([summary, ...new Set(warnings)].join("\n"), partial ? "warning" : "success");
+      showToast(partial ? "일부 파일을 저장하지 못했습니다. 생성 결과의 실패 항목을 확인해 주세요." : `${outputFolderName}: PDF·복원 JSON·ZIP 저장이 끝났습니다.`);
+    });
   } catch (error) {
     console.error(error);
     if (isSaveRootAccessError(error)) {
       state.saveRootHandle = null;
       syncSaveRootUi();
       updateSummary();
-      setRunStatus("PDF 생성 실패", "error");
+      setRunStatus(`생성 중단 · ${outputFolderName}\n저장된 PDF ${completedFiles}개. 저장 폴더 권한을 다시 연결해 주세요. 이미 저장된 파일은 유지됩니다.`, "error");
       showToast("저장 폴더 권한이 끊겨 PDF를 저장하지 못했습니다.");
       return;
     }
 
-    setRunStatus("PDF 생성 실패", "error");
+    setRunStatus(`생성 중단 · ${outputFolderName}\n저장된 PDF ${completedFiles}개. 이미 저장된 파일은 유지됩니다.\n${formatErrorDetail(error)}`, "error");
     showToast(`PDF 생성 중 오류: ${formatErrorDetail(error)}`);
   } finally {
     elements.renderStage.innerHTML = "";
     setGenerating(false);
     await updateOutputFolderPreview();
   }
+}
+
+async function withOutputLock(task) {
+  if (hasNativeHost()) {
+    return task();
+  }
+  if (!window.navigator?.locks?.request) {
+    throw new Error("이 브라우저는 동시 출력 보호를 지원하지 않습니다. 최신 Edge 또는 Chrome을 사용해 주세요.");
+  }
+  return window.navigator.locks.request("word-lab-output", { mode: "exclusive" }, task);
 }
 
 async function ensureWritableSaveRootHandle() {
@@ -2425,7 +2839,7 @@ function buildPrintablePage({
         <div class="sheet-title">${title}</div>
       </div>
       <div class="sheet-header-side">
-        <div class="sheet-badge-stack">
+        <div class="sheet-badge-stack${pageCount > 1 ? " sheet-badge-stack-paged" : ""}">
           <span class="sheet-badge sheet-class-badge">${escapeHtml(className)}</span>
           <span class="sheet-badge sheet-session-badge">${sessionNumber}차</span>
           ${pageBadgeMarkup}
@@ -2462,7 +2876,47 @@ function buildPrintablePage({
     </footer>
   `;
 
+  page._printOptions = { className, sessionNumber, items, quizMode, dateLabel, answerKey, itemStartIndex, totalItemCount, pageNumber, pageCount };
   return page;
+}
+
+function paginatePrintablePages(pages) {
+  const output = [];
+  elements.renderStage.innerHTML = "";
+  if (!pages.length) return [];
+  const options = { ...pages[0]._printOptions, items: pages.flatMap((page) => page._printOptions.items) };
+  if (options.items.length <= PRINTABLE_ITEMS_PER_PAGE) {
+    const singlePage = buildPrintablePage({ ...options, pageNumber: 1, pageCount: 1 });
+    elements.renderStage.appendChild(singlePage);
+    const fits = singlePage.getBoundingClientRect().height <= 1123;
+    singlePage.remove();
+    if (fits) return [singlePage];
+  }
+  let offset = 0;
+  while (offset < options.items.length) {
+    let low = 1;
+    let high = Math.min(PRINTABLE_ITEMS_PER_PAGE, options.items.length - offset);
+    let fittingCount = 0;
+    while (low <= high) {
+      const count = Math.floor((low + high) / 2);
+      const candidate = buildPrintablePage({ ...options, items: options.items.slice(offset, offset + count), itemStartIndex: options.itemStartIndex + offset, pageCount: options.totalItemCount });
+      elements.renderStage.appendChild(candidate);
+      const fits = candidate.getBoundingClientRect().height <= 1123;
+      candidate.remove();
+      if (fits) {
+        fittingCount = count;
+        low = count + 1;
+      } else {
+        high = count - 1;
+      }
+    }
+    if (!fittingCount) {
+      throw new Error(`${options.className}: ${options.itemStartIndex + offset + 1}번 한 문항이 A4 인쇄 영역을 넘습니다. 긴 단어·뜻을 나누거나 줄여 주세요.`);
+    }
+    output.push({ ...options, items: options.items.slice(offset, offset + fittingCount), itemStartIndex: options.itemStartIndex + offset });
+    offset += fittingCount;
+  }
+  return output.map((options, index) => buildPrintablePage({ ...options, pageNumber: index + 1, pageCount: output.length }));
 }
 
 function renderSheetColumn(entries, baseIndex, quizMode, options = {}) {
@@ -2654,6 +3108,9 @@ async function renderPagesToPdfBuffer(pages, documentTitle) {
   });
 
   await waitForLayout();
+  pages = paginatePrintablePages(pages);
+  pages.forEach((page) => elements.renderStage.appendChild(page));
+  await waitForLayout();
 
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF({
@@ -2680,7 +3137,10 @@ async function renderPagesToPdfBuffer(pages, documentTitle) {
       pdf.addPage("a4", "portrait");
     }
 
-    pdf.addImage(imageData, "JPEG", 0, 0, 210, 297, undefined, "FAST");
+    const scale = Math.min(210 / canvas.width, 297 / canvas.height);
+    const width = canvas.width * scale;
+    const height = canvas.height * scale;
+    pdf.addImage(imageData, "JPEG", (210 - width) / 2, 0, width, height, undefined, "FAST");
     canvas.width = 0;
     canvas.height = 0;
   }
@@ -2697,15 +3157,21 @@ async function writePdfFile(folderHandle, fileName, pdfBuffer) {
 async function writeBinaryFile(folderHandle, fileName, binaryBuffer) {
   const fileHandle = await folderHandle.getFileHandle(fileName, { create: true });
   const writable = await fileHandle.createWritable();
-  await writable.write(binaryBuffer);
-  await writable.close();
+  try {
+    await writable.write(binaryBuffer);
+    await writable.close();
+  } catch (error) {
+    try {
+      await writable.abort();
+    } catch (abortError) {
+      console.error(abortError);
+    }
+    throw error;
+  }
 }
 
 async function writeTextFile(folderHandle, fileName, text) {
-  const fileHandle = await folderHandle.getFileHandle(fileName, { create: true });
-  const writable = await fileHandle.createWritable();
-  await writable.write(text);
-  await writable.close();
+  await writeBinaryFile(folderHandle, fileName, text);
 }
 
 async function ensureDirectory(parentHandle, folderName) {
@@ -2713,9 +3179,16 @@ async function ensureDirectory(parentHandle, folderName) {
 }
 
 function createZipArchive(files) {
+  // shortcut: classic ZIP only; add ZIP64 if outputs can exceed 4 GiB or 65,535 entries.
+  if (files.length > 0xffff) {
+    throw new Error("ZIP 파일은 최대 65,535개 항목까지 지원합니다.");
+  }
   const normalizedEntries = files.map((file) => {
     const path = normalizeZipPath(file.path);
     const nameBytes = new TextEncoder().encode(path);
+    if (nameBytes.length > 0xffff) {
+      throw new Error("ZIP 파일 경로가 너무 깁니다. 반 이름을 줄여 주세요.");
+    }
     const dataBytes = toUint8Array(file.data);
     const crc32 = computeCrc32(dataBytes);
     const modifiedAt = file.modifiedAt instanceof Date ? file.modifiedAt : new Date();
@@ -2731,15 +3204,18 @@ function createZipArchive(files) {
     };
   });
 
-  let localSize = 0;
-  let centralSize = 0;
-  const localRecords = [];
-  const centralRecords = [];
+  const localSize = normalizedEntries.reduce((size, entry) => size + 30 + entry.nameBytes.length + entry.dataBytes.length, 0);
+  const centralSize = normalizedEntries.reduce((size, entry) => size + 46 + entry.nameBytes.length, 0);
+  if (localSize + centralSize + 22 > 0xffffffff) {
+    throw new Error("ZIP 용량이 4 GiB를 넘습니다. 반이나 차수를 나눠 생성해 주세요.");
+  }
+  const zipBuffer = new Uint8Array(localSize + centralSize + 22);
+  let localOffset = 0;
+  let centralOffset = localSize;
 
   normalizedEntries.forEach((entry) => {
-    const localOffset = localSize;
-    const localRecord = new Uint8Array(30 + entry.nameBytes.length + entry.dataBytes.length);
-    const localView = new DataView(localRecord.buffer);
+    const localRecord = zipBuffer.subarray(localOffset, localOffset + 30 + entry.nameBytes.length + entry.dataBytes.length);
+    const localView = new DataView(zipBuffer.buffer, localOffset, localRecord.length);
     localView.setUint32(0, 0x04034b50, true);
     localView.setUint16(4, 20, true);
     localView.setUint16(6, 0x0800, true);
@@ -2753,11 +3229,9 @@ function createZipArchive(files) {
     localView.setUint16(28, 0, true);
     localRecord.set(entry.nameBytes, 30);
     localRecord.set(entry.dataBytes, 30 + entry.nameBytes.length);
-    localRecords.push(localRecord);
-    localSize += localRecord.length;
 
-    const centralRecord = new Uint8Array(46 + entry.nameBytes.length);
-    const centralView = new DataView(centralRecord.buffer);
+    const centralRecord = zipBuffer.subarray(centralOffset, centralOffset + 46 + entry.nameBytes.length);
+    const centralView = new DataView(zipBuffer.buffer, centralOffset, centralRecord.length);
     centralView.setUint32(0, 0x02014b50, true);
     centralView.setUint16(4, 20, true);
     centralView.setUint16(6, 20, true);
@@ -2776,12 +3250,11 @@ function createZipArchive(files) {
     centralView.setUint32(38, 0, true);
     centralView.setUint32(42, localOffset, true);
     centralRecord.set(entry.nameBytes, 46);
-    centralRecords.push(centralRecord);
-    centralSize += centralRecord.length;
+    localOffset += localRecord.length;
+    centralOffset += centralRecord.length;
   });
 
-  const endRecord = new Uint8Array(22);
-  const endView = new DataView(endRecord.buffer);
+  const endView = new DataView(zipBuffer.buffer, localSize + centralSize, 22);
   endView.setUint32(0, 0x06054b50, true);
   endView.setUint16(4, 0, true);
   endView.setUint16(6, 0, true);
@@ -2791,20 +3264,6 @@ function createZipArchive(files) {
   endView.setUint32(16, localSize, true);
   endView.setUint16(20, 0, true);
 
-  const zipBuffer = new Uint8Array(localSize + centralSize + endRecord.length);
-  let cursor = 0;
-
-  localRecords.forEach((record) => {
-    zipBuffer.set(record, cursor);
-    cursor += record.length;
-  });
-
-  centralRecords.forEach((record) => {
-    zipBuffer.set(record, cursor);
-    cursor += record.length;
-  });
-
-  zipBuffer.set(endRecord, cursor);
   return zipBuffer.buffer;
 }
 
@@ -2882,23 +3341,30 @@ function getDosDateTime(date) {
 }
 
 function setGenerating(isGenerating) {
+  if (isGenerating && state.isGenerating) {
+    return;
+  }
   state.isGenerating = isGenerating;
-  elements.generateBtn.disabled = isGenerating;
-  elements.pickFolderBtn.disabled = isGenerating;
-  elements.addClassBtn.disabled = isGenerating || isActivePresetLocked();
-  elements.seedDemoBtn.disabled = isGenerating;
-  elements.outputDateInput.disabled = isGenerating;
-  elements.outputDateQuickButtons.forEach((button) => {
-    button.disabled = isGenerating;
-  });
+  if (isGenerating) {
+    document.querySelectorAll(".page-shell input, .page-shell textarea, .page-shell select, .page-shell button, #snapshot-file-input").forEach((control) => {
+      state.generationControls.set(control, control.disabled);
+      control.disabled = true;
+    });
+  } else {
+    state.generationControls.forEach((wasDisabled, control) => {
+      control.disabled = wasDisabled;
+    });
+    state.generationControls.clear();
+  }
+  enforceInputReadOnly();
 }
 
 function setRunStatus(message, type) {
   const typeClass =
     type === "success"
       ? "status-panel success"
-      : type === "error"
-        ? "status-panel"
+      : type === "error" || type === "warning"
+        ? "status-panel warning"
         : "status-panel info";
 
   elements.runStatus.className = typeClass;
@@ -2906,6 +3372,9 @@ function setRunStatus(message, type) {
 }
 
 function seedDemoData() {
+  if (!prepareStateReplacement("현재 반 그룹의 입력과 문항·차수 설정을 예시로 바꿀까요?")) {
+    return;
+  }
   const demoClasses = [
     {
       className: "2강서A",
@@ -3059,6 +3528,7 @@ function setSessionCount(value) {
     elements.sessionCountIncreaseBtn.setAttribute("aria-disabled", String(!canIncrease));
   }
 
+  enforceInputReadOnly();
   return nextValue;
 }
 
@@ -3109,13 +3579,6 @@ function formatOutputFolderName(teacherName, dateFolderName) {
   }
 
   return `${sanitizeFilePart(normalizedTeacherName)}_${dateFolderName}`;
-}
-
-function formatDisplayDate(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}.${month}.${day}`;
 }
 
 function sanitizeFilePart(value) {

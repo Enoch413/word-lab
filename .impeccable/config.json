@@ -1,0 +1,53 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "dark-glow",
+        "value": "*",
+        "files": [
+          "app/index.html"
+        ],
+        "createdAt": "2026-10-20T00:32:07.201Z",
+        "reason": "Agent review: existing light-theme focus rings at styles.css use zero blur (0 0 0 4px); existing elevation shadows have positive Y offsets. No decorative colored glow was introduced by the P1 fixes."
+      },
+      {
+        "rule": "overused-font",
+        "value": "plus jakarta sans",
+        "files": [
+          "app/index.html"
+        ],
+        "createdAt": "2026-10-20T00:38:22.068Z",
+        "reason": "Agent: font is present in HEAD and the user requested only the four P1 fixes while preserving the established design. Popularity is not a functional defect; retain this specific existing face."
+      },
+      {
+        "rule": "overused-font",
+        "value": "plus jakarta sans",
+        "files": [
+          "app/styles.css"
+        ],
+        "createdAt": "2026-10-20T00:38:22.103Z",
+        "reason": "Agent: existing HEAD font declarations are unchanged by the P1 patch. Preserve the incumbent typography; this exception applies only to this font in this file."
+      },
+      {
+        "rule": "kicker-above-heading",
+        "value": "*",
+        "files": [
+          "app/index.html"
+        ],
+        "createdAt": "2026-10-20T01:06:43.851Z",
+        "reason": "Agent: the existing card-label headings are present in HEAD. The user requested preserving the established design during the P2 fixes; retain this existing label treatment rather than expand into P3 visual changes."
+      },
+      {
+        "rule": "nested-cards",
+        "value": "*",
+        "files": [
+          "app/index.html"
+        ],
+        "createdAt": "2026-10-20T01:06:43.887Z",
+        "reason": "Agent: the five control/summary sections already exist in HEAD. Preserve their established grouping per the user request; P2 overflow and mobile spacing were fixed without flattening the card design."
+      }
+    ]
+  }
+}

@@ -43,6 +43,7 @@ function Write-HttpResponse {
     "Content-Type: $ContentType",
     "Content-Length: $($Body.Length)",
     "Cache-Control: no-store",
+    "X-Word-Lab-Root: $rootIdentity",
     "Connection: close",
     "",
     ""
@@ -67,6 +68,14 @@ function Resolve-RequestPath {
     $path = "/index.html"
   }
 
+  $publicPaths = @(
+    "/index.html", "/app/index.html", "/app/app.js", "/app/styles.css",
+    "/app/firebase-config.js", "/app/vendor/html2canvas.min.js", "/app/vendor/jspdf.umd.min.js"
+  )
+  if ($publicPaths -notcontains $path) {
+    return $null
+  }
+
   $relativePath = $path.TrimStart("/") -replace "/", [System.IO.Path]::DirectorySeparatorChar
   $rootFullPath = [System.IO.Path]::GetFullPath($RootPath).TrimEnd("\", "/")
   $fullPath = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($rootFullPath, $relativePath))
@@ -83,7 +92,30 @@ function Resolve-RequestPath {
   return $fullPath
 }
 
-$rootFullPath = [System.IO.Path]::GetFullPath($Root)
+function Read-RequestLine {
+  param([System.Net.Sockets.NetworkStream]$Stream)
+
+  $buffer = New-Object 'System.Collections.Generic.List[byte]'
+  $timer = [System.Diagnostics.Stopwatch]::StartNew()
+  while ($buffer.Count -lt 32768) {
+    if ($timer.ElapsedMilliseconds -ge 1000) {
+      throw [System.TimeoutException]::new("Request headers timed out")
+    }
+    $Stream.ReadTimeout = [int][Math]::Max(1, [Math]::Min(500, 1000 - $timer.ElapsedMilliseconds))
+    $next = $Stream.ReadByte()
+    if ($next -lt 0) { return "" }
+    $buffer.Add([byte]$next)
+    $length = $buffer.Count
+    if ($length -ge 4 -and $buffer[$length - 4] -eq 13 -and $buffer[$length - 3] -eq 10 -and $buffer[$length - 2] -eq 13 -and $buffer[$length - 1] -eq 10) {
+      $headers = [System.Text.Encoding]::ASCII.GetString($buffer.ToArray())
+      return $headers.Split("`r`n")[0]
+    }
+  }
+  throw [System.IO.InvalidDataException]::new("Request headers too large")
+}
+
+$rootFullPath = [System.IO.Path]::GetFullPath($Root).TrimEnd("\", "/")
+$rootIdentity = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($rootFullPath))
 $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Port)
 $listener.Start()
 
@@ -94,18 +126,12 @@ Write-Host "Close this window to stop the server."
 
 while ($true) {
   $client = $listener.AcceptTcpClient()
+  $stream = $null
 
   try {
     $stream = $client.GetStream()
-    $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::ASCII, $false, 4096, $true)
-    $requestLine = $reader.ReadLine()
-
-    while ($true) {
-      $line = $reader.ReadLine()
-      if ($null -eq $line -or $line -eq "") {
-        break
-      }
-    }
+    $stream.WriteTimeout = 2000
+    $requestLine = Read-RequestLine $stream
 
     if ([string]::IsNullOrWhiteSpace($requestLine)) {
       continue
@@ -139,8 +165,25 @@ while ($true) {
     Write-HttpResponse $stream 200 "OK" $bytes (Get-ContentType $filePath) $includeBody
   } catch {
     try {
-      $body = [System.Text.Encoding]::UTF8.GetBytes("Server Error")
-      Write-HttpResponse $stream 500 "Internal Server Error" $body "text/plain; charset=utf-8" $true
+      $statusCode = 408
+      $statusText = "Request Timeout"
+      if ($_.Exception -is [System.IO.InvalidDataException]) {
+        $statusCode = 431
+        $statusText = "Request Header Fields Too Large"
+      } elseif (-not ($_.Exception -is [System.IO.IOException]) -and -not ($_.Exception -is [System.TimeoutException])) {
+        $statusCode = 500
+        $statusText = "Internal Server Error"
+      }
+      $body = [System.Text.Encoding]::UTF8.GetBytes($statusText)
+      Write-HttpResponse $stream $statusCode $statusText $body "text/plain; charset=utf-8" $true
+      if ($statusCode -eq 431) {
+        # Consume bounded buffered excess so Windows delivers the response before closing.
+        $discard = New-Object byte[] 4096
+        $drained = 0
+        while ($stream.DataAvailable -and $drained -lt 32768) {
+          $drained += $stream.Read($discard, 0, $discard.Length)
+        }
+      }
     } catch {
       # The client may have disconnected before the response could be written.
     }

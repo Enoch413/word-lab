@@ -19,6 +19,24 @@
   </div>
 
   <div class="page-shell">
+    <main class="workspace-panel">
+      <div class="workspace-stack">
+        <section class="class-section">
+          <div class="card-head">
+            <div>
+              <div class="card-label">반별 입력</div>
+              <h2>엑셀에서 붙여넣기</h2>
+            </div>
+            <div class="card-actions">
+              <button class="btn btn-ghost" type="button" id="add-class-btn">반 추가</button>
+              <button class="btn btn-ghost" type="button" id="seed-demo-btn">예시 채우기</button>
+            </div>
+          </div>
+          <div class="status-panel info" id="validation-notes" role="status" aria-live="polite">반과 단어를 입력하면 여기서 검사가 표시됩니다.</div>
+          <div class="class-list" id="class-list"></div>
+        </section>
+      </div>
+    </main>
     <aside class="hero-panel sidebar-panel">
       <div class="sidebar-stack">
         <section class="control-card save-root-card">
@@ -49,14 +67,24 @@
         </section>
 
         <div class="summary-notes">
-          <div class="status-panel success" id="run-status">아직 생성 전입니다.</div>
+          <div class="status-panel info" id="input-editing-notice" role="status" aria-live="polite" hidden>
+            <p id="input-editing-message"></p>
+            <button class="btn btn-ghost" type="button" id="acquire-input-btn">이 탭의 편집권 확인</button>
+          </div>
+          <div class="status-panel info" id="auth-status" role="status" aria-live="polite" hidden></div>
+          <button class="btn btn-ghost" type="button" id="input-scope-btn" hidden>로그인 저장 입력 열기</button>
+          <div class="status-panel success" id="run-status" role="status" aria-live="polite" aria-atomic="true">아직 생성 전입니다.</div>
+          <div class="status-panel warning" id="storage-warning" role="alert" hidden>
+            <p>입력이 자동 저장되지 않았습니다. 이 탭을 닫기 전에 ‘입력 백업’으로 JSON 파일을 저장해 주세요.</p>
+            <button class="btn btn-ghost" type="button" id="retry-save-btn">자동 저장 다시 시도</button>
+          </div>
         </div>
 
         <section class="control-card preset-card">
           <div class="preset-grid">
             <div class="field-block">
               <label class="field-title">반 그룹</label>
-              <div class="segmented compact" id="preset-toggle">
+              <div class="segmented compact" id="preset-toggle" role="group" aria-label="반 그룹">
                 <label class="segment">
                   <input type="radio" name="class-preset" value="mon-wed" checked>
                   <span>월수반</span>
@@ -92,6 +120,11 @@
             <div class="preset-tools">
               <button class="btn btn-ghost" type="button" id="toggle-layout-lock-btn">반 구성 편집</button>
               <button class="btn btn-ghost" type="button" id="import-snapshot-btn">파일 복원</button>
+              <button class="btn btn-ghost" type="button" id="export-snapshot-btn">입력 백업</button>
+            </div>
+            <div class="recovery-notice" id="undo-notice" hidden>
+              <span>직전 교체·삭제 전 입력을 이 탭에서 복구할 수 있습니다. 탭을 닫거나 새로고침하면 되돌릴 수 없습니다.</span>
+              <button class="btn btn-ghost" type="button" id="undo-replacement-btn">직전 입력 되돌리기</button>
             </div>
           </div>
         </section>
@@ -101,6 +134,7 @@
             <div class="field-block">
               <label class="field-title" for="question-count">시험지당 문항 수</label>
               <input class="text-input" id="question-count" type="number" min="5" max="100" step="1" value="50">
+              <div class="class-validation" id="question-count-validation" hidden></div>
             </div>
 
             <div class="field-block">
@@ -119,23 +153,6 @@
       </div>
     </aside>
 
-    <main class="workspace-panel">
-      <div class="workspace-stack">
-        <section class="class-section">
-          <div class="card-head">
-            <div>
-              <div class="card-label">반별 입력</div>
-              <h3>엑셀에서 붙여넣기</h3>
-            </div>
-            <div class="card-actions">
-              <button class="btn btn-ghost" type="button" id="add-class-btn">반 추가</button>
-              <button class="btn btn-ghost" type="button" id="seed-demo-btn">예시 채우기</button>
-            </div>
-          </div>
-          <div class="class-list" id="class-list"></div>
-        </section>
-      </div>
-    </main>
   </div>
 
   <template id="class-card-template">
@@ -143,7 +160,7 @@
       <div class="class-card-head">
         <div class="class-card-heading">
           <div class="card-label">CLASS SLOT</div>
-          <h4>기본반</h4>
+          <h3 class="class-title">기본반</h3>
         </div>
         <button class="icon-btn remove-class-btn" type="button" aria-label="반 삭제">삭제</button>
       </div>
@@ -155,7 +172,7 @@
         </label>
         <div class="field-block class-mode-field">
           <span class="field-title">출제 방향</span>
-          <div class="segmented compact class-mode-toggle">
+          <div class="segmented compact class-mode-toggle" role="group" aria-label="출제 방향">
             <label class="segment">
               <input class="class-quiz-mode-input" type="radio" value="word-to-meaning" checked>
               <span>영 - 한</span>
@@ -173,6 +190,7 @@
         </div>
       </div>
 
+      <div class="class-validation" hidden></div>
       <div class="class-editor-grid">
         <label class="field-block class-editor-pane">
           <span class="field-title">단어 / 뜻 붙여넣기</span>
@@ -190,7 +208,7 @@
     </article>
   </template>
 
-  <div class="toast" id="toast"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
   <div class="render-stage" id="render-stage" aria-hidden="true"></div>
   <input type="file" id="snapshot-file-input" accept=".json,application/json" hidden>
 

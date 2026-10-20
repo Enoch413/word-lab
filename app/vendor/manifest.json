@@ -1,0 +1,21 @@
+{
+  "libraries": [
+    {
+      "source": "https://raw.githubusercontent.com/parallax/jsPDF/v4.2.1/dist/jspdf.umd.min.js",
+      "version": "4.2.1",
+      "file": "jspdf.umd.min.js",
+      "license": "MIT",
+      "name": "jsPDF",
+      "sha256Lf": "e6551fcdc32f09d6853b2c5126d18d01d9447e0da618a41a11ebeee0f6c20d54"
+    },
+    {
+      "source": "https://registry.npmjs.org/html2canvas/-/html2canvas-1.4.1.tgz#package/dist/html2canvas.min.js",
+      "version": "1.4.1",
+      "file": "html2canvas.min.js",
+      "license": "MIT",
+      "name": "html2canvas",
+      "sha256Lf": "e87e550794322e574a1fda0c1549a3c70dae5a93d9113417a429016838eab8cb"
+    }
+  ],
+  "hashNormalization": "UTF-8 text, CRLF normalized to LF"
+}
